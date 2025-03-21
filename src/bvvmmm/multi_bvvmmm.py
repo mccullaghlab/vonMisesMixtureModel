@@ -427,18 +427,31 @@ class MultiSineBVVMMM:
     def plot_clusters(self, data):
         fontsize=12
         clusters = self.predict(data)[0]
-        # make scatter plot overlaid with countours
+        # make scatter plot colored by clustering
         fig, axes = plt.subplots(1,self.n_residues,figsize=(5*self.n_residues,5))
-        for i, axis in enumerate(axes):
-            axis.scatter(data[:, i, 0], data[:, i, 1], c=clusters, cmap='viridis', s=50)
-            axis.set_xlabel(r'$\phi$ (radians)',fontsize=fontsize)
-            axis.set_ylabel(r'$\psi$ (radians)',fontsize=fontsize)
-            title = "Phi/Psi " + str(i+1) + "BVM with " + str(self.n_components) + " components"
-            axis.set_title(title, fontsize=fontsize)
-            axis.grid(True)
-            axis.tick_params(labelsize=fontsize)
-            axis.set_xlim(-np.pi,np.pi)
-            axis.set_ylim(-np.pi,np.pi)
-            axis.set_aspect('equal', 'box')
+        if self.n_residues > 1:
+            for i, axis in enumerate(axes):
+                axis.scatter(data[:, i, 0], data[:, i, 1], c=clusters, cmap='tab10', s=10)
+                axis.set_xlabel(r'$\phi$ (radians)',fontsize=fontsize)
+                axis.set_ylabel(r'$\psi$ (radians)',fontsize=fontsize)
+                title = "Phi/Psi " + str(i+1) + "BVM with " + str(self.n_components) + " components"
+                axis.set_title(title, fontsize=fontsize)
+                axis.grid(True)
+                axis.tick_params(labelsize=fontsize)
+                axis.set_xlim(-np.pi,np.pi)
+                axis.set_ylim(-np.pi,np.pi)
+                axis.set_aspect('equal', 'box')
+        else:
+            axes.scatter(data[:, 0, 0], data[:, 0, 1], c=clusters, cmap='tab10', s=10)
+            axes.set_xlabel(r'$\phi$ (radians)',fontsize=fontsize)
+            axes.set_ylabel(r'$\psi$ (radians)',fontsize=fontsize)
+            title = "Phi/Psi BVM with " + str(self.n_components) + " components"
+            axes.set_title(title, fontsize=fontsize)
+            axes.grid(True)
+            axes.tick_params(labelsize=fontsize)
+            axes.set_xlim(-np.pi,np.pi)
+            axes.set_ylim(-np.pi,np.pi)
+            axes.set_aspect('equal', 'box')
+
         plt.tight_layout()
         plt.show()
