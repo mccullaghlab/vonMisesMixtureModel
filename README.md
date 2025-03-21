@@ -27,6 +27,7 @@ Clone the repo and install dependencies:
 git clone https://github.com/your-username/sine-bvm-em.git
 cd sine-bvm-em
 pip install -r requirements.txt
+```
 
 **Dependencies**:
 - `torch`
