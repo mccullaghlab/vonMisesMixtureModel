@@ -31,7 +31,7 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0):
         A list or array of component counts to test.
     n_attempts : int, default=15
         Number of random initializations to try for each component count.
-    n_attempts : float, default=1e-4
+    tol : float, default=1e-4
         log likelihood tolerance for convergence
     train_frac : float, default=1.0
         Fraction of the data to use for training. If less than 1.0, the remainder
