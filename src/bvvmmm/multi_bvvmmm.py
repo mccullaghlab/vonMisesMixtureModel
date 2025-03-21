@@ -17,7 +17,7 @@ def fit_with_attempts(data, n_components, n_attempts):
         print(i+1, ll[i])
     return models[np.argmax(ll)]
 
-def component_scan(data, components, n_attempts=15, train_frac=1.0):
+def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0):
     """
     Scan through different numbers of components by fitting multiple attempts
     of the SineVMEM model and returning metrics including training log likelihood,
@@ -31,6 +31,8 @@ def component_scan(data, components, n_attempts=15, train_frac=1.0):
         A list or array of component counts to test.
     n_attempts : int, default=15
         Number of random initializations to try for each component count.
+    n_attempts : float, default=1e-4
+        log likelihood tolerance for convergence
     train_frac : float, default=1.0
         Fraction of the data to use for training. If less than 1.0, the remainder
         is held out as a cross validation (CV) set.
@@ -77,7 +79,7 @@ def component_scan(data, components, n_attempts=15, train_frac=1.0):
             temp_cv_ll = np.empty(n_attempts)
         models = []
         for attempt in range(n_attempts):
-            model = SineVMEM(n_components=comp, max_iter=200, verbose=False, tol=1e-5)
+            model = MultiSineBVVMMM(n_components=comp, max_iter=200, verbose=False, tol=tol)
             # Fit using the training set only
             model.fit(train_data)
             models.append(model)
