@@ -24,9 +24,9 @@ This model generalizes the standard BVM mixture model to support **multiple inde
 Clone the repo and install dependencies:
 
 ```bash
-git clone https://github.com/your-username/sine-bvm-em.git
-cd sine-bvm-em
-pip install -r requirements.txt
+git clone https://github.com/mccullaghlab/vonMisesMixtureModel.git
+cd vonMisesMixtureModel
+pip install setup.py
 ```
 
 **Dependencies**:
