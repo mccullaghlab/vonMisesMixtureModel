@@ -402,7 +402,7 @@ class MultiSineBVVMMM:
         ], dim=1)
         ll = torch.mean(torch.logsumexp(ln_likelihoods_per_cluster,1)).cpu().numpy()
         temp = torch.mean(torch.amax(ln_likelihoods_per_cluster,axis=1)).cpu().numpy()
-        return self.n_components*6*np.log(n_frames)/n_frames - 2*ll - 2*temp
+        return self.n_components*(1+5*self.n_residues)*np.log(n_frames)/n_frames - 2*ll - 2*temp
 
     def bic(self, data):
         """Bayesian Information Criterion per frame"""
@@ -412,7 +412,7 @@ class MultiSineBVVMMM:
         # pass data to torch
         data = torch.tensor(data,device=self.device, dtype=self.dtype)
         ll = self._e_step(data)[1].cpu().numpy()
-        return self.n_components*6*np.log(n_frames)/n_frames - 2*ll 
+        return self.n_components*(1+5*self.n_residues)*np.log(n_frames)/n_frames - 2*ll 
 
     def aic(self, data):
         """Akaike Information Criterion per frame"""
@@ -422,7 +422,7 @@ class MultiSineBVVMMM:
         # pass data to torch
         data = torch.tensor(data,device=self.device, dtype=self.dtype)
         ll = self._e_step(data)[1].cpu().numpy()
-        return self.n_components*12/n_frames - 2*ll 
+        return 2*self.n_components*(1+5*self.n_residues)/n_frames - 2*ll 
     
     def plot_clusters(self, data):
         fontsize=12
