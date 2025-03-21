@@ -17,27 +17,94 @@ def fit_with_attempts(data, n_components, n_attempts):
         print(i+1, ll[i])
     return models[np.argmax(ll)]
 
-def component_scan(data, components, n_attempts=15):
-    
-    ll = np.empty(components.size)
-    aic = np.empty(components.size)
-    bic = np.empty(components.size)
-    icl = np.empty(components.size)
-    
-    for i, component in enumerate(components):
+def component_scan(data, components, n_attempts=15, train_frac=1.0):
+    """
+    Scan through different numbers of components by fitting multiple attempts
+    of the SineVMEM model and returning metrics including training log likelihood,
+    AIC, BIC, ICL, and (if using a validation split) the cross validation log likelihood.
+
+    Parameters
+    ----------
+    data : array-like, shape (n_data_points, n_residues, 2)
+        Input data for fitting.
+    components : array-like
+        A list or array of component counts to test.
+    n_attempts : int, default=15
+        Number of random initializations to try for each component count.
+    train_frac : float, default=1.0
+        Fraction of the data to use for training. If less than 1.0, the remainder
+        is held out as a cross validation (CV) set.
+
+    Returns
+    -------
+    ll : numpy.ndarray
+        Best (maximum) training log likelihood for each tested component count.
+    aic : numpy.ndarray
+        AIC value corresponding to the best training log likelihood.
+    bic : numpy.ndarray
+        BIC value corresponding to the best training log likelihood.
+    icl : numpy.ndarray
+        ICL value corresponding to the best training log likelihood.
+    cv_ll : numpy.ndarray (if train_frac < 1.0)
+        Cross validation log likelihood for each component count.
+    """
+    import numpy as np
+    import torch
+
+    n_total = data.shape[0]
+    if train_frac < 1.0:
+        n_train = int(train_frac * n_total)
+        # Randomly permute indices and split
+        permutation = np.random.permutation(n_total)
+        train_data = data[permutation[:n_train]]
+        cv_data = data[permutation[n_train:]]
+        print(f"Training on {n_train} samples and validating on {n_total - n_train} samples.")
+    else:
+        train_data = data
+        cv_data = None
+
+    n_comp = len(components)
+    ll = np.empty(n_comp)
+    aic = np.empty(n_comp)
+    bic = np.empty(n_comp)
+    icl = np.empty(n_comp)
+    if cv_data is not None:
+        cv_ll = np.empty(n_comp)
+
+    for i, comp in enumerate(components):
         temp_ll = np.empty(n_attempts)
+        if cv_data is not None:
+            temp_cv_ll = np.empty(n_attempts)
         models = []
         for attempt in range(n_attempts):
-            model = MultiSineBVVMMM(n_components=component, max_iter=200, verbose=False, tol=1e-5)
-            model.fit(data)
+            model = SineVMEM(n_components=comp, max_iter=200, verbose=False, tol=1e-5)
+            # Fit using the training set only
+            model.fit(train_data)
             models.append(model)
             temp_ll[attempt] = model.ll.cpu().numpy()
-            print(component, attempt+1, temp_ll[attempt])
-        ll[i] = np.amax(temp_ll)
-        aic[i] = models[np.argmax(temp_ll)].aic(data)
-        bic[i] = models[np.argmax(temp_ll)].bic(data)
-        icl[i] = models[np.argmax(temp_ll)].icl(data)
-    return ll, aic, bic, icl
+            if cv_data is not None:
+                # Evaluate CV log likelihood on the held-out set.
+                # Note: model._e_step returns (responsibilities, log_likelihood)
+                _, cv_loglik = model._e_step(torch.tensor(cv_data, device=model.device, dtype=model.dtype))
+                temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
+            print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
+                  (f"CV LL: {temp_cv_ll[attempt]}" if cv_data is not None else ""))
+        # Choose the attempt with the highest training log likelihood
+        best_index = np.argmax(temp_ll)
+        ll[i] = temp_ll[best_index]
+        best_model = models[best_index]
+        # Compute the information criteria on the full data (or you could use train_data if preferred)
+        aic[i] = best_model.aic(data)
+        bic[i] = best_model.bic(data)
+        icl[i] = best_model.icl(data)
+        if cv_data is not None:
+            cv_ll[i] = temp_cv_ll[best_index]
+
+    if cv_data is not None:
+        return ll, aic, bic, icl, cv_ll
+    else:
+        return ll, aic, bic, icl
+
 
 def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
     # Flatten the data for a global check
