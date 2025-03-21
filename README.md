@@ -110,7 +110,7 @@ Initialize the mixture model.
 
 ## 🙌 Acknowledgments
 
-Developed by [Your Name] as part of research into high-dimensional circular clustering and protein conformational modeling.
+Developed by Martin McCullagh as part of research into high-dimensional circular clustering and protein conformational modeling.
 
 ---
 
