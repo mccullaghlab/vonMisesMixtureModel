@@ -1,3 +1,19 @@
+Metadata-Version: 2.1
+Name: vonMisesMixtureModel
+Version: 0.0.0
+Summary: python/pyTorch code for determining parameters for bivariate von Mises mixture models
+Home-page: https://github.com/mccullaghlab/vonMisesMixtureModel
+Author: Martin McCullagh
+Author-email: martin.mccullagh@okstate.edu
+License: MIT
+Project-URL: Bug Tracker, https://github.com/mccullaghlab/vonMisesMixtureModel/issues
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.6
+Description-Content-Type: text/markdown
+License-File: LICENSE
+
 # vonMisesMixtureModel
 
 A PyTorch-based implementation of a flexible Expectation-Maximization (EM) algorithm for fitting **mixtures of products of independent Sine Bivariate von Mises (BVM) distributions**. Designed for analyzing **circular data**, such as **multiple pairs of phi/psi dihedral angles** in biomolecules or other angular systems.

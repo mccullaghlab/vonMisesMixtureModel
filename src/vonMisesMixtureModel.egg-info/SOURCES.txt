@@ -1,0 +1,8 @@
+LICENSE
+README.md
+setup.py
+src/vonMisesMixtureModel.egg-info/PKG-INFO
+src/vonMisesMixtureModel.egg-info/SOURCES.txt
+src/vonMisesMixtureModel.egg-info/dependency_links.txt
+src/vonMisesMixtureModel.egg-info/requires.txt
+src/vonMisesMixtureModel.egg-info/top_level.txt
