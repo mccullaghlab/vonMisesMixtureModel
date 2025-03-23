@@ -237,51 +237,96 @@ class MultiSineBVVMMM:
         responsibilities = torch.exp(log_responsibilities - log_norm)
         return responsibilities, ll
 
-    @staticmethod
-    def _compute_cluster_params(resp, phi, psi, sin_phi, cos_phi, sin_psi, cos_psi):
-        resp /= resp.sum()
+ def _m_step_vectorized(self, data, sin_data, cos_data, responsibilities):
+        """
+        Vectorized version of the M-step.
     
-        # Compute means
-        S_bar_phi = (resp * sin_phi).sum()
-        C_bar_phi = (resp * cos_phi).sum()
-        R1 = torch.sqrt(C_bar_phi**2 + S_bar_phi**2)
-        mu1 = torch.atan2(S_bar_phi, C_bar_phi)
+        Parameters
+        ----------
+        data : torch.Tensor, shape (n_samples, n_residues, 2)
+            Input data, where the last dimension holds (phi, psi).
+        sin_data : torch.Tensor, shape (n_samples, n_residues, 2)
+            Sine of input data, where the last dimension holds (sin(phi), sin(psi)).
+        cos_data : torch.Tensor, shape (n_samples, n_residues, 2)
+            Sine of input data, where the last dimension holds (cos(phi), cos(psi)).
+        responsibilities : torch.Tensor, shape (n_samples, n_components)
+            The responsibilities computed in the E-step.
+    
+        Returns
+        -------
+        weights : torch.Tensor, shape (n_components,)
+            Updated mixture weights.
+        means : torch.Tensor, shape (n_components, n_residues, 2)
+            Updated mean directions for each cluster and residue.
+        kappas : torch.Tensor, shape (n_components, n_residues, 3)
+            Updated concentration parameters (kappa1, kappa2) and lambda (correlation).
+        """
+        n_samples, n_residues, _ = data.shape
+        n_components = self.n_components
 
-        S_bar_psi = (resp * sin_psi).sum()
-        C_bar_psi = (resp * cos_psi).sum()
-        R2 = torch.sqrt(C_bar_psi**2 + S_bar_psi**2)
-        mu2 = torch.atan2(S_bar_psi, C_bar_psi)
+        # Update weights: average responsibility for each component.
+        weights = responsibilities.sum(dim=0) / n_samples
 
-        # Compute kappas
+        # Normalize responsibilities for each component (shape: [n_samples, n_components])
+        norm_resp = responsibilities / responsibilities.sum(dim=0, keepdim=True)
+
+        # Extract phi and psi from data: shape (n_samples, n_residues)
+        data_phi = data[:, :, 0]
+        data_psi = data[:, :, 1]
+
+        # Extract sine and cosine values: shape (n_samples, n_residues)
+        sin_phi = sin_data[:, :, 0]
+        cos_phi = cos_data[:, :, 0]
+        sin_psi = sin_data[:, :, 1]
+        cos_psi = cos_data[:, :, 1]
+
+        # Compute weighted sums for phi using einsum:
+        # S_bar_phi: (n_components, n_residues)
+        S_bar_phi = torch.einsum('nk,nm->km', norm_resp, sin_phi)
+        C_bar_phi = torch.einsum('nk,nm->km', norm_resp, cos_phi)
+        mu1 = torch.atan2(S_bar_phi, C_bar_phi)  # Mean phi for each (component, residue)
+
+        # For psi:
+        S_bar_psi = torch.einsum('nk,nm->km', norm_resp, sin_psi)
+        C_bar_psi = torch.einsum('nk,nm->km', norm_resp, cos_psi)
+        mu2 = torch.atan2(S_bar_psi, C_bar_psi)  # Mean psi for each (component, residue)
+
+        # Compute resultant lengths
+        R1 = torch.sqrt(S_bar_phi**2 + C_bar_phi**2)  # (n_components, n_residues)
+        R2 = torch.sqrt(S_bar_psi**2 + C_bar_psi**2)    # (n_components, n_residues)
+
+        # Estimate kappas using the f4 approximation (Dobson 1978)
         kappa1 = (1.28 - 0.53 * R1**2) * torch.tan(0.5 * torch.pi * R1)
         kappa2 = (1.28 - 0.53 * R2**2) * torch.tan(0.5 * torch.pi * R2)
 
-        # Compute lambda
-        lambda_ = (kappa1 * kappa2 * (resp * torch.sin(phi - mu1) * torch.sin(psi - mu2)).sum()) / (
-            torch.special.i1(kappa1) / torch.special.i0(kappa1) * 
-            torch.special.i1(kappa2) / torch.special.i0(kappa2)
-        )
+        # Compute Bessel function ratios for each (component, residue)
+        bessel_ratio_k1 = torch.special.i1(kappa1) / torch.special.i0(kappa1)
+        bessel_ratio_k2 = torch.special.i1(kappa2) / torch.special.i0(kappa2)
 
-        return mu1, mu2, kappa1, kappa2, lambda_
+        # To compute lambda, we need the weighted sum of sin differences.
+        # Expand mu1 and mu2 to subtract from each data point.
+        # mu1 and mu2: (n_components, n_residues) -> (1, n_components, n_residues)
+        mu1_exp = mu1.unsqueeze(0)
+        mu2_exp = mu2.unsqueeze(0)
+        # Expand data to (n_samples, 1, n_residues)
+        data_phi_exp = data_phi.unsqueeze(1)
+        data_psi_exp = data_psi.unsqueeze(1)
+        # Compute differences: (n_samples, n_components, n_residues)
+        diff_phi = data_phi_exp - mu1_exp
+        diff_psi = data_psi_exp - mu2_exp
 
-    def _m_step_vect(self, data, responsibilities):
-        weights = responsibilities.sum(dim=0) / responsibilities.size(0)
+        # Expand normalized responsibilities: (n_samples, n_components, 1)
+        norm_resp_exp = norm_resp.unsqueeze(2)
+        # Compute the weighted sum over samples for lambda numerator.
+        weighted_sum = torch.sum(norm_resp_exp * torch.sin(diff_phi) * torch.sin(diff_psi), dim=0)  # (n_components, n_residues)
 
-        # Precompute sin and cos values
-        sin_phi, cos_phi = torch.sin(data[:, :, 0]), torch.cos(data[:, :, 0])
-        sin_psi, cos_psi = torch.sin(data[:, :, 1]), torch.cos(data[:, :, 1])
-        # Expand inputs to match responsibility shape (n_components, n_samples)
-        phi = data[:, 0].unsqueeze(0).expand(self.n_components, -1)
-        psi = data[:, 1].unsqueeze(0).expand(self.n_components, -1)
-        sin_phi = sin_phi.unsqueeze(0).expand(self.n_components, -1)
-        cos_phi = cos_phi.unsqueeze(0).expand(self.n_components, -1)
-        sin_psi = sin_psi.unsqueeze(0).expand(self.n_components, -1)
-        cos_psi = cos_psi.unsqueeze(0).expand(self.n_components, -1)
-        # Vectorized computation
-        means_kappas = vmap(self._compute_cluster_params)(responsibilities.T, phi, psi, sin_phi, cos_phi, sin_psi, cos_psi)
-        
-        means = torch.stack([means_kappas[0], means_kappas[1]], dim=1)
-        kappas = torch.stack([means_kappas[2], means_kappas[3], means_kappas[4]], dim=1)
+        # Compute lambda for each component and residue.
+        lambda_val = (kappa1 * kappa2 * weighted_sum) / (bessel_ratio_k1 * bessel_ratio_k2)
+
+        # Stack kappas into one tensor: shape (n_components, n_residues, 3)
+        kappas = torch.stack([kappa1, kappa2, lambda_val], dim=2)
+        # Stack means into one tensor: shape (n_components, n_residues, 2)
+        means = torch.stack([mu1, mu2], dim=2)
 
         return weights, means, kappas
 
@@ -346,7 +391,7 @@ class MultiSineBVVMMM:
         with torch.no_grad():  # Disable gradients
             for _ in range(self.max_iter):
                 responsibilities, ll = self._e_step(data)
-                self.weights_, self.means_, self.kappas_ = self._m_step(data, sin_data, cos_data, responsibilities)
+                self.weights_, self.means_, self.kappas_ = self._m_step_vectorized(data, sin_data, cos_data, responsibilities)
             
                 if self.verbose:
                     print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
