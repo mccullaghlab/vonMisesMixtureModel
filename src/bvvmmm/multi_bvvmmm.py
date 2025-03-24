@@ -237,7 +237,7 @@ class MultiSineBVVMMM:
         responsibilities = torch.exp(log_responsibilities - log_norm)
         return responsibilities, ll
 
- def _m_step_vectorized(self, data, sin_data, cos_data, responsibilities):
+    def _m_step_vectorized(self, data, sin_data, cos_data, responsibilities):
         """
         Vectorized version of the M-step.
     
