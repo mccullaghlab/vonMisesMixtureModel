@@ -15,9 +15,9 @@ def fit_with_attempts(data, n_components, n_attempts):
         models.append(model)
         ll[i] = model.ll
         print(i+1, ll[i])
-    return models[np.argmax(ll)]
+    return models[np.nanargmax(ll)]
 
-def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0):
+def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, verbose=True, plot=False):
     """
     Scan through different numbers of components by fitting multiple attempts
     of the SineVMEM model and returning metrics including training log likelihood,
@@ -89,12 +89,16 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0):
                 # Note: model._e_step returns (responsibilities, log_likelihood)
                 _, cv_loglik = model._e_step(torch.tensor(cv_data, device=model.device, dtype=model.dtype))
                 temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
-            print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
+            if verbose == True:
+                print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
                   (f"CV LL: {temp_cv_ll[attempt]}" if cv_data is not None else ""))
         # Choose the attempt with the highest training log likelihood
-        best_index = np.argmax(temp_ll)
+        best_index = np.nanargmax(temp_ll)
         ll[i] = temp_ll[best_index]
         best_model = models[best_index]
+        # plot
+        if plot==True:
+            plot_model_sample_residue_marginal_fe(best_model, data)
         # Compute the information criteria on the full data (or you could use train_data if preferred)
         aic[i] = best_model.aic(data)
         bic[i] = best_model.bic(data)
@@ -469,7 +473,7 @@ class MultiSineBVVMMM:
         ll = self._e_step(data)[1].cpu().numpy()
         return 2*self.n_components*(1+5*self.n_residues)/n_frames - 2*ll 
     
-    def plot_clusters(self, data):
+    def plot_scatter_clusters(self, data):
         fontsize=12
         clusters = self.predict(data)[0]
         # make scatter plot colored by clustering
@@ -500,3 +504,62 @@ class MultiSineBVVMMM:
 
         plt.tight_layout()
         plt.show()
+
+    def plot_model_sample_residue_marginal_fe(self, data, filename=None, fontsize=12):
+        # ignore divide by zero error message from numpy
+        np.seterr(divide = 'ignore') 
+        # Create the figure and subplots
+        fig, axes = plt.subplots(1, self.n_residues, figsize=(5*self.n_residues, 5), sharey=True) # 1 row, n_residue columns
+        # set some grid stuff
+        theta = np.linspace(-np.pi, np.pi, 200)
+        phi_mesh, psi_mesh = np.meshgrid(theta,theta)
+        phi_grid = torch.tensor(phi_mesh,device=self.device, dtype=self.dtype)
+        psi_grid = torch.tensor(psi_mesh,device=self.device, dtype=self.dtype)
+        # loop over residues
+        for i in range(self.n_residues):
+        
+            # determine sameple marginal FE
+            hist, xedges, yedges = np.histogram2d(data[:,i,0], data[:,i,1], bins=120, density=True)
+            x = 0.5*(xedges[1:] + xedges[:-1])
+            y = 0.5*(yedges[1:] + yedges[:-1])
+            Y, X = np.meshgrid(x,y)
+            sample_fe = -np.log(hist)
+            sample_fe -= np.amin(sample_fe)
+        
+            # determine model marginal FE
+            Z = torch.zeros_like(phi_grid)
+            for j in range(self.n_components):
+                Z += self.weights_[j]*self._bvm_sine_pdf(phi_grid,psi_grid,self.means_[j,i],self.kappas_[j,i])
+            Z = Z.cpu().numpy()
+            model_fe = -np.log(Z)
+            model_fe -= np.amin(model_fe)
+            
+            # plot
+            title = "Residue " + str(i+1) + " marginal FE (" + str(model.n_components) + " components)"
+            if model.n_residues > 1:
+                axes[i].pcolormesh(phi_mesh, psi_mesh, model_fe, cmap='hot_r', vmin=0, vmax=8)
+                axes[i].contour(X, Y, sample_fe,alpha=0.5)
+                axes[i].set_xlabel(r'$\phi$ (radians)', fontsize=fontsize)
+                if i==0:
+                    axes[i].set_ylabel(r'$\psi$ (radians)', fontsize=fontsize)
+                axes[i].set_title(title, fontsize=fontsize)
+                axes[i].tick_params(labelsize=fontsize)
+            else:
+                axes.pcolormesh(phi_mesh, psi_mesh, model_fe, cmap='hot_r', vmin=0, vmax=8)
+                axes.contour(X, Y, sample_fe,alpha=0.5)
+                axes.set_xlabel(r'$\phi$ (radians)', fontsize=fontsize)
+                if i==0:
+                    axes.set_ylabel(r'$\psi$ (radians)', fontsize=fontsize)
+                axes.set_title(title, fontsize=fontsize)
+                axes.tick_params(labelsize=fontsize)
+            
+        
+        
+        # Add color bar
+        #fig.colorbar(pm, label="Free Energy/kT")
+        plt.tight_layout()
+        # savefig if desired
+        if filename is not None:
+            plt.savefig(filename,dpi=80)
+        # Show the plot
+        plt.show();        
