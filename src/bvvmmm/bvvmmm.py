@@ -1,41 +1,113 @@
 import torch
-from functorch import vmap
 import matplotlib.pyplot as plt
-from torch.special import i0
 from scipy.special import iv, comb
+import sys
 
-def fit_with_attempts(data, n_components, n_attempts, tol=1e-5):
+def fit_with_attempts(data, n_components, n_attempts):
     models = []
     ll = np.empty(n_attempts)
     for i in range(n_attempts):
-        model = SineBVVMMM(n_components=n_components, max_iter=200, tol=tol)
+        model = SineBVvMMM(n_components=n_components, max_iter=200, tol=1e-5)
         model.fit(data)
         models.append(model)
-        ll[i] = model.ll
+        ll[i] = model.ll.cpu().numpy()
         print(i+1, ll[i])
-    return models[np.argmax(ll)]
+    return models[np.nanargmax(ll)]
 
-def component_scan(data, components, n_attempts=15, tol=1e-15):
-    
-    ll = np.empty(components.size)
-    aic = np.empty(components.size)
-    bic = np.empty(components.size)
-    icl = np.empty(components.size)
-    
-    for i, component in enumerate(components):
+def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, verbose=True, plot=False):
+    """
+    Scan through different numbers of components by fitting multiple attempts
+    of the SineVMEM model and returning metrics including training log likelihood,
+    AIC, BIC, ICL, and (if using a validation split) the cross validation log likelihood.
+
+    Parameters
+    ----------
+    data : array-like, shape (n_data_points, n_residues, 2)
+        Input data for fitting.
+    components : array-like
+        A list or array of component counts to test.
+    n_attempts : int, default=15
+        Number of random initializations to try for each component count.
+    tol : float, default=1e-4
+        log likelihood tolerance for convergence
+    train_frac : float, default=1.0
+        Fraction of the data to use for training. If less than 1.0, the remainder
+        is held out as a cross validation (CV) set.
+
+    Returns
+    -------
+    ll : numpy.ndarray
+        Best (maximum) training log likelihood for each tested component count.
+    aic : numpy.ndarray
+        AIC value corresponding to the best training log likelihood.
+    bic : numpy.ndarray
+        BIC value corresponding to the best training log likelihood.
+    icl : numpy.ndarray
+        ICL value corresponding to the best training log likelihood.
+    cv_ll : numpy.ndarray (if train_frac < 1.0)
+        Cross validation log likelihood for each component count.
+    """
+    import numpy as np
+    import torch
+
+    n_total = data.shape[0]
+    if train_frac < 1.0:
+        n_train = int(train_frac * n_total)
+        # Randomly permute indices and split
+        permutation = np.random.permutation(n_total)
+        train_data = data[permutation[:n_train]]
+        cv_data = data[permutation[n_train:]]
+        print(f"Training on {n_train} samples and validating on {n_total - n_train} samples.")
+    else:
+        train_data = data
+        cv_data = None
+
+    n_comp = len(components)
+    ll = np.empty(n_comp)
+    aic = np.empty(n_comp)
+    bic = np.empty(n_comp)
+    icl = np.empty(n_comp)
+    if cv_data is not None:
+        cv_ll = np.empty(n_comp)
+
+    for i, comp in enumerate(components):
         temp_ll = np.empty(n_attempts)
+        if cv_data is not None:
+            temp_cv_ll = np.empty(n_attempts)
         models = []
         for attempt in range(n_attempts):
-            model = SineBVVMMM(n_components=component, max_iter=200, verbose=False, tol=tol)
-            model.fit(data)
+            model = SineBVvMMM(n_components=comp, max_iter=200, verbose=False, tol=tol)
+            # Fit using the training set only
+            model.fit(train_data)
             models.append(model)
             temp_ll[attempt] = model.ll.cpu().numpy()
-            print(component, attempt+1, temp_ll[attempt])
-        ll[i] = np.amax(temp_ll)
-        aic[i] = models[np.argmax(temp_ll)].aic(data)
-        bic[i] = models[np.argmax(temp_ll)].bic(data)
-        icl[i] = models[np.argmax(temp_ll)].icl(data)
-    return ll, aic, bic, icl
+            if cv_data is not None:
+                # Evaluate CV log likelihood on the held-out set.
+                # Note: model._e_step returns (responsibilities, log_likelihood)
+                _, cv_loglik = model._e_step(torch.tensor(cv_data, device=model.device, dtype=model.dtype))
+                temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
+            if verbose == True:
+                print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
+                  (f"CV LL: {temp_cv_ll[attempt]}" if cv_data is not None else ""))
+        # Choose the attempt with the highest training log likelihood
+        best_index = np.nanargmax(temp_ll)
+        ll[i] = temp_ll[best_index]
+        best_model = models[best_index]
+        # plot
+        if plot==True:
+            best_model.plot_model_sample_fe(data)
+        # Compute the information criteria on the full data (or you could use train_data if preferred)
+        aic[i] = best_model.aic(data)
+        bic[i] = best_model.bic(data)
+        icl[i] = best_model.icl(data)
+        if cv_data is not None:
+            cv_ll[i] = temp_cv_ll[best_index]
+
+    if cv_data is not None:
+        return ll, aic, bic, icl, cv_ll
+    else:
+        return ll, aic, bic, icl
+
 
 def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
     # Flatten the data for a global check
@@ -44,8 +116,50 @@ def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
     if np.any(data_flat < lower_bound) or np.any(data_flat > upper_bound):
         warnings.warn("Data values appear to be outside the typical radian range "
                       f"[{lower_bound}, {upper_bound}]. Ensure that the data is provided in radians.")
+        sys.exit(1)
 
-class SineBVVMMM:
+# TorchScript-compiled function for batched log-PDF computation.
+@torch.jit.script
+def batched_bvm_sine_ln_pdf(phi: torch.Tensor, psi: torch.Tensor, 
+                            means: torch.Tensor, kappas: torch.Tensor, 
+                            norm_const: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the log-PDF for the bivariate von Mises distribution in a batched manner.
+    
+    Parameters
+    ----------
+    phi : Tensor of shape (n_samples, n_components)
+        The φ values for each sample and component.
+    psi : Tensor of shape (n_samples, n_components)
+        The ψ values for each sample and component.
+    means : Tensor of shape (n_components, 2)
+        Mean angles for each component.
+    kappas : Tensor of shape (n_components, 3)
+        Concentration parameters for each component.
+    norm_const : Tensor of shape (n_components,)
+        Normalization constants for each component.
+        
+    Returns
+    -------
+    log_pdf : Tensor of shape (n_samples, n_components)
+        The log probability density for each sample and component.
+    """
+    n_samples = phi.size(0)
+    n_components = phi.size(1)
+    # Expand component parameters to (n_samples, n_components)
+    mu1 = means[:, 0].unsqueeze(0).expand(n_samples, n_components)
+    mu2 = means[:, 1].unsqueeze(0).expand(n_samples, n_components)
+    kappa1 = kappas[:, 0].unsqueeze(0).expand(n_samples, n_components)
+    kappa2 = kappas[:, 1].unsqueeze(0).expand(n_samples, n_components)
+    lam = kappas[:, 2].unsqueeze(0).expand(n_samples, n_components)
+    norm_exp = norm_const.unsqueeze(0).expand(n_samples, n_components)
+    
+    exponent = (kappa1 * torch.cos(phi - mu1) +
+                kappa2 * torch.cos(psi - mu2) +
+                lam * torch.sin(phi - mu1) * torch.sin(psi - mu2))
+    return exponent - torch.log(norm_exp)
+
+class SineBVvMMM:
     """
     Sine Bivariate von Mises Mixture Model Expectation-Maximization (EM) Algorithm
 
@@ -112,24 +226,89 @@ class SineBVVMMM:
         self.kappas_ = None
         self.means_ = None
 
+
     def _calculate_normalization_constant(self, kappas, thresh=1e-10, m_max=100):
-        """ Calculate the normalization constant of the Sine BVM using (hopefully) converging infinite sum 
-            NOTE: This is currently done on cpu-only using numpy because of the need of iv function
         """
-        k1 = kappas[0].cpu().numpy()
-        k2 = kappas[1].cpu().numpy()
-        lam = kappas[2].cpu().numpy()
-        C = 0
-        diff = 1
-        m = 0
-        const = 4*np.pi**2
-        arg = lam ** 2 / (4 * k1 * k2)
-        while diff > thresh and m < m_max:
-            diff = const * comb(2 * m, m) * arg ** m * iv(m,k1) * iv(m,k2)
-            C += diff
-            m += 1
+        Calculate the normalization constant of the Sine BVM for a batch of components
+        using an infinite sum that is terminated once the maximum term is below a threshold.
+    
+        Parameters
+        ----------
+        kappas : torch.Tensor, shape (n_components, 3)
+            A tensor containing the concentration parameters for each component, where:
+                kappas[:,0] : kappa1
+                kappas[:,1] : kappa2
+                kappas[:,2] : lambda (correlation term)
+        thresh : float, optional
+            Convergence threshold for the series (default: 1e-10).
+        m_max : int, optional
+            Maximum number of terms to sum (default: 100).
+    
+        Returns
+        -------
+        C : torch.Tensor, shape (n_components,)
+            The normalization constant for each component.
+        """
+        # Move to CPU and convert to NumPy for SciPy functions.
+        kappas_np = kappas.cpu().numpy()
+        k1 = kappas_np[:, 0]
+        k2 = kappas_np[:, 1]
+        lam = kappas_np[:, 2]
+        #const = 4 * np.pi**2
+        # Precompute the common term in the series.
+        arg = lam**2 / (4 * k1 * k2)
+    
+        # Initialize normalization constant for each component.
+        C = np.zeros_like(k1)
+    
+        # Sum terms from m = 0 up to m_max (or until convergence)
+        for m in range(m_max):
+            # Compute the mth term for all components.
+            term = comb(2 * m, m) * (arg**m) * iv(m, k1) * iv(m, k2)
+            C += term
+            # Check convergence: if the maximum absolute term is below the threshold, break.
+            if np.all(np.abs(term) < thresh):
+                break
+        C *= 4 * np.pi**2
+        # Convert back to a torch tensor on the original device and dtype.
         return torch.tensor(C, device=self.device, dtype=self.dtype)
 
+
+    def _second_order_normalization_constant(self, kappas):
+        """
+        Calculate the normalization constant of the Sine BVM using a second-order 
+        approximation (m = 0 and m = 1 terms only) for a batched input of kappas.
+
+        This approximation assumes that the correlation term (lambda, i.e., kappas[:,2]) 
+        is small. It is fully vectorized and works on GPU or CPU.
+
+        Parameters
+        ----------
+        kappas : torch.Tensor, shape (n_components, 3)
+            Tensor containing the concentration parameters for each component, where:
+                kappas[:,0] : kappa1
+                kappas[:,1] : kappa2
+                kappas[:,2] : lambda
+
+        Returns
+        -------
+        C : torch.Tensor, shape (n_components,)
+            The approximate normalization constant for each component.
+        """
+        # Compute the argument for the second-order term.
+        arg = kappas[:, 2] ** 2 / (4 * kappas[:, 0] * kappas[:, 1])
+    
+        # Compute modified Bessel functions for each component.
+        i0_k1 = torch.special.i0(kappas[:, 0])
+        i0_k2 = torch.special.i0(kappas[:, 1])
+        i1_k1 = torch.special.i1(kappas[:, 0])
+        i1_k2 = torch.special.i1(kappas[:, 1])
+    
+        # Second-order approximation: m = 0 term + 2 * (m = 1 term)
+        C = i0_k1 * i0_k2 + 2 * arg * i1_k1 * i1_k2
+        C *= 4 * torch.pi**2
+        return C
+    
     def _bvm_sine_pdf(self, phi, psi, means, kappas, C=None):
         if C is None:
             C = self._calculate_normalization_constant(kappas)
@@ -138,79 +317,35 @@ class SineBVVMMM:
                     kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
         return torch.exp(exponent) / C
 
-    def _bvm_sine_ln_pdf(self, phi, psi, means, kappas, C=None):
-        if C is None:
-            C = self._calculate_normalization_constant(kappas)
+    def _bvm_sine_ln_pdf(self, phi, psi, means, kappas, C):
+        # This function is superseded by the batched version compiled with TorchScript.
         exponent = (kappas[0] * torch.cos(phi - means[0]) +
                     kappas[1] * torch.cos(psi - means[1]) +
-                    kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[0]))
+                    kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
         return exponent - torch.log(C)
     
     def _e_step(self, data):
-        phi, psi = data[:, 0], data[:, 1]
-        # compute log responsibilities
-        log_responsibilities = torch.stack([
-            torch.log(self.weights_[k]) + self._bvm_sine_ln_pdf(phi, psi, self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        # log norm for each data point
-        log_norm = torch.logsumexp(log_responsibilities,dim=1,keepdim=True)
-        # log likelihood per data point
+        """
+        Vectorized E-step that computes the log responsibilities and overall log-likelihood.
+        Uses the TorchScript-compiled batched_bvm_sine_ln_pdf.
+        """
+        n_samples = data.size(0)
+        # data is shape (n_samples, 2)
+        # Expand phi and psi to shape (n_samples, n_components)
+        phi = data[:, 0].unsqueeze(1).expand(n_samples, self.n_components)
+        psi = data[:, 1].unsqueeze(1).expand(n_samples, self.n_components)
+        # Compute log PDF for each sample and component in one vectorized call.
+        log_pdf = batched_bvm_sine_ln_pdf(phi, psi, self.means_, self.kappas_, self.normalization_)
+        # Add the log mixture weights.
+        log_weights = torch.log(self.weights_).unsqueeze(0)  # shape (1, n_components)
+        log_responsibilities = log_weights + log_pdf  # shape (n_samples, n_components)
+        # Compute normalization over components.
+        log_norm = torch.logsumexp(log_responsibilities, dim=1, keepdim=True)
         ll = torch.mean(log_norm)
-        # compute responsibilities
         responsibilities = torch.exp(log_responsibilities - log_norm)
         return responsibilities, ll
 
-    @staticmethod
-    def _compute_cluster_params(resp, phi, psi, sin_phi, cos_phi, sin_psi, cos_psi):
-        resp /= resp.sum()
-    
-        # Compute means
-        S_bar_phi = (resp * sin_phi).sum()
-        C_bar_phi = (resp * cos_phi).sum()
-        R1 = torch.sqrt(C_bar_phi**2 + S_bar_phi**2)
-        mu1 = torch.atan2(S_bar_phi, C_bar_phi)
-
-        S_bar_psi = (resp * sin_psi).sum()
-        C_bar_psi = (resp * cos_psi).sum()
-        R2 = torch.sqrt(C_bar_psi**2 + S_bar_psi**2)
-        mu2 = torch.atan2(S_bar_psi, C_bar_psi)
-
-        # Compute kappas
-        kappa1 = (1.28 - 0.53 * R1**2) * torch.tan(0.5 * torch.pi * R1)
-        kappa2 = (1.28 - 0.53 * R2**2) * torch.tan(0.5 * torch.pi * R2)
-
-        # Compute lambda
-        lambda_ = (kappa1 * kappa2 * (resp * torch.sin(phi - mu1) * torch.sin(psi - mu2)).sum()) / (
-            torch.special.i1(kappa1) / torch.special.i0(kappa1) * 
-            torch.special.i1(kappa2) / torch.special.i0(kappa2)
-        )
-
-        return mu1, mu2, kappa1, kappa2, lambda_
-
-    def _m_step_vect(self, data, sin_data, cos_data, responsibilities):
-        weights = responsibilities.sum(dim=0) / responsibilities.size(0)
-
-        #  sin and cos values
-        sin_phi, cos_phi = sin_data[:, 0], cos_data[:, 0]
-        sin_psi, cos_psi = sin_data[:, 1], cos_data[:, 1]
-        # Expand inputs to match responsibility shape (n_components, n_samples)
-        phi = data[:, 0].unsqueeze(0).expand(self.n_components, -1)
-        psi = data[:, 1].unsqueeze(0).expand(self.n_components, -1)
-        sin_phi = sin_phi.unsqueeze(0).expand(self.n_components, -1)
-        cos_phi = cos_phi.unsqueeze(0).expand(self.n_components, -1)
-        sin_psi = sin_psi.unsqueeze(0).expand(self.n_components, -1)
-        cos_psi = cos_psi.unsqueeze(0).expand(self.n_components, -1)
-        # Vectorized computation
-        means_kappas = vmap(self._compute_cluster_params)(responsibilities.T, phi, psi, sin_phi, cos_phi, sin_psi, cos_psi)
-        
-        means = torch.stack([means_kappas[0], means_kappas[1]], dim=1)
-        kappas = torch.stack([means_kappas[2], means_kappas[3], means_kappas[4]], dim=1)
-
-        return weights, means, kappas
-
-
-    def _m_step_einsum(self, data, sin_data, cos_data, responsibilities):
+    def _m_step(self, data, sin_data, cos_data, responsibilities):
         """
         Vectorized M-step using torch.einsum for a single pair of dihedral angles.
 
@@ -278,45 +413,16 @@ class SineBVVMMM:
         # Assemble the updated means and kappas.
         means = torch.stack([mu_phi, mu_psi], dim=1)         # shape (n_components, 2)
         kappas = torch.stack([kappa_phi, kappa_psi, lambda_val], dim=1)  # shape (n_components, 3)
-
-        return weights, means, kappas
-
-    def _m_step(self, data, sin_data, cos_data, responsibilities):
-        # determine new cluster weights based on expectation step
-        weights = responsibilities.sum(dim=0) / responsibilities.size(0)
-        # declare empty parameter tensors
-        means = torch.empty((self.n_components,2),device=self.device, dtype=self.dtype)
-        kappas = torch.empty((self.n_components,3),device=self.device, dtype=self.dtype)
-        # determine new values of parameters
-        for k in range(self.n_components):
-            # Normalize frame weights for each cluster
-            resp = responsibilities[:, k]
-            resp /= resp.sum()
-            # determine ML estimate of mu1
-            S_bar = (resp * sin_data[:,0]).sum()
-            C_bar = (resp * cos_data[:,0]).sum()
-            R1 = torch.sqrt(C_bar**2+S_bar**2) 
-            means[k,0] = torch.atan2(S_bar, C_bar)
-            # determine ML estimate of mu2
-            S_bar = (resp * sin_data[:,1]).sum()
-            C_bar = (resp * cos_data[:,1]).sum()
-            R2 = torch.sqrt(C_bar**2+S_bar**2) 
-            means[k,1] = torch.atan2(S_bar, C_bar)
-            # determine ML estimate of kappas currently assuming lambda is small (i.e. truncate sum at m=0)
-            # use f4 approximation (min error in Table 1) from Dobson 1978 to determine estimate of kappa1 and kappa2 - this assumes lambda is zero
-            kappas[k,0] = (1.28-0.53*R1**2)*torch.tan(0.5*torch.pi*R1)
-            kappas[k,1] = (1.28-0.53*R2**2)*torch.tan(0.5*torch.pi*R2)
-            # ML estimate of lambda
-            # Compute Bessel ratios
-            bessel_ratio_k1 = torch.special.i1(kappas[k,0]) / torch.special.i0(kappas[k,0])
-            bessel_ratio_k2 = torch.special.i1(kappas[k,1]) / torch.special.i0(kappas[k,1])
-            # Weighted estimate for lambda
-            kappas[k,2] = (kappas[k,0] * kappas[k,1] * (resp * torch.sin(data[:, 0] - means[k,0]) * torch.sin(data[:, 1] - means[k,1])).sum()) / (bessel_ratio_k1 * bessel_ratio_k2)
-
-        return weights, means, kappas
+        # precompute normalization constants
+        norms = self._calculate_normalization_constant(kappas)
+        #norms = torch.tensor([self._calculate_normalization_constant(kappas[k]) for k in range(self.n_components)])
+        return weights, means, kappas, norms
 
     def fit(self, data, vectorize=True):
         """ Fit the model parameters using data """
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
         data = torch.tensor(data,device=self.device, dtype=self.dtype)
         # Precompute sin and cos values
         sin_data = torch.sin(data)
@@ -325,18 +431,15 @@ class SineBVVMMM:
         self.weights_ = torch.full((self.n_components,), 1.0 / self.n_components, device=self.device, dtype=self.dtype)
         self.means_ = torch.rand((self.n_components,2), device=self.device, dtype=self.dtype) * 2 * torch.pi - torch.pi
         self.kappas_ = torch.column_stack( (torch.ones((self.n_components,2), device=self.device, dtype=self.dtype),torch.zeros(self.n_components, device=self.device, dtype=self.dtype)))
-
+        self.normalization_ = self._second_order_normalization_constant(self.kappas_)
+        
         # perform EM:
         old_ll = 0.0
         with torch.no_grad():  # Disable gradients
             for _ in range(self.max_iter):
                 responsibilities, ll = self._e_step(data)
-                if vectorize == True:
-                    self.weights_, self.means_, self.kappas_ = self._m_step_einsum(data, sin_data, cos_data, responsibilities)
-                    #self.weights_, self.means_, self.kappas_ = self._m_step_vect(data, sin_data, cos_data, responsibilities)
-                else:
-                    self.weights_, self.means_, self.kappas_ = self._m_step(data, sin_data, cos_data, responsibilities)
-            
+                self.weights_, self.means_, self.kappas_, self.normalization_  = self._m_step(data, sin_data, cos_data, responsibilities)
+                    
                 if self.verbose:
                     print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
             
@@ -346,46 +449,58 @@ class SineBVVMMM:
         self.ll = ll
 
     def predict(self, data):
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        ln_likelihoods_per_cluster = torch.stack([
-            torch.log(self.weights_[k]) + self._bvm_sine_ln_pdf(data[:,0], data[:,1], self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        return ln_likelihoods_per_cluster.argmax(dim=1)
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
+        data = torch.tensor(data, device=self.device, dtype=self.dtype)
+        responsibilities, ll = self._e_step(data)
+        return responsibilities.argmax(dim=1), ll
 
     def ln_pdf(self, data):
         """ Compute ln pdf of the mixture for points """
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        ln_likelihoods_per_cluster = torch.stack([
-            torch.log(self.weights_[k]) + self._bvm_sine_ln_pdf(data[:,0], data[:,1], self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        return torch.logsumexp(ln_likelihoods_per_cluster,1)
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
+        data = torch.tensor(data, device=self.device, dtype=self.dtype)
+        # Vectorized log-PDF evaluation.
+        n_samples = data.size(0)
+        phi = data[:, 0].unsqueeze(1).expand(n_samples, self.n_components)
+        psi = data[:, 1].unsqueeze(1).expand(n_samples, self.n_components)
+        log_pdf = batched_bvm_sine_ln_pdf(phi, psi, self.means_, self.kappas_, self.normalization_)
+        log_weights = torch.log(self.weights_).unsqueeze(0)
+        ln_likelihoods = log_pdf + log_weights
+        return torch.logsumexp(ln_likelihoods, dim=1)
 
     def pdf(self, data):
         """ Compute pdf of the mixture for points """
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        likelihoods_per_cluster = torch.stack([
-            self.weights_[k] * self._bvm_sine_pdf(data[:,0], data[:,1], self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        return torch.sum(likelihoods_per_cluster,1).cpu().numpy()
+        return torch.exp(self.ln_pdf(data)).cpu().numpy()
 
     def icl(self, data):
         """Integrated completed likelihood per frame (McNicholas eq 4 and need to read citations)"""
-        n_frames = data.shape[0]
+        n_samples = data.shape[0]
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
         data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        ln_likelihoods_per_cluster = torch.stack([
-            torch.log(self.weights_[k]) + self._bvm_sine_ln_pdf(data[:,0], data[:,1], self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        ll = torch.mean(torch.logsumexp(ln_likelihoods_per_cluster,1)).cpu().numpy()
-        temp = torch.mean(torch.amax(ln_likelihoods_per_cluster,axis=1)).cpu().numpy()
-        return self.n_components*6*np.log(n_frames)/n_frames - 2*ll - 2*temp
+        # Expand phi and psi to shape (n_samples, n_components)
+        phi = data[:, 0].unsqueeze(1).expand(n_samples, self.n_components)
+        psi = data[:, 1].unsqueeze(1).expand(n_samples, self.n_components)
+        log_pdf = batched_bvm_sine_ln_pdf(phi, psi, self.means_, self.kappas_, self.normalization_)
+        # Add the log mixture weights.
+        log_weights = torch.log(self.weights_).unsqueeze(0)  # shape (1, n_components)
+        log_responsibilities = log_weights + log_pdf  # shape (n_samples, n_components)
+        # Compute normalization over components.
+        log_norm = torch.logsumexp(log_responsibilities, dim=1, keepdim=True)
+        ll = torch.mean(log_norm)
+        temp = torch.mean(torch.amax(log_responsibilities,axis=1)).cpu().numpy()
+        return self.n_components*6*np.log(n_samples)/n_samples - 2*ll - 2*temp
 
     def bic(self, data):
         """Bayesian Information Criterion per frame"""
         n_frames = data.shape[0]
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
         data = torch.tensor(data,device=self.device, dtype=self.dtype)
         ll = self._e_step(data)[1].cpu().numpy()
         return self.n_components*6*np.log(n_frames)/n_frames - 2*ll 
@@ -393,15 +508,18 @@ class SineBVVMMM:
     def aic(self, data):
         """Akaike Information Criterion per frame"""
         n_frames = data.shape[0]
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
         data = torch.tensor(data,device=self.device, dtype=self.dtype)
         ll = self._e_step(data)[1].cpu().numpy()
         return self.n_components*12/n_frames - 2*ll 
     
-    def plot_clusters(self, data):
+    def plot_scatter_clusters(self, data):
         fontsize=12
-        clusters = self.predict(data).cpu()
+        clusters = self.predict(data)[0].cpu().numpy()
         plt.figure(figsize=(6, 6))
-        plt.scatter(data[:, 0], data[:, 1], c=clusters.numpy(), cmap='viridis', s=50)
+        plt.scatter(data[:, 0], data[:, 1], c=clusters, cmap='tab10', s=10)
         plt.xlabel(r'$\phi$ (radians)',fontsize=fontsize)
         plt.ylabel(r'$\psi$ (radians)',fontsize=fontsize)
         title = "BVM Mixture Model with " + str(self.n_components) + " components"
@@ -412,4 +530,48 @@ class SineBVVMMM:
         plt.ylim(-np.pi,np.pi)
         plt.axis('equal')
         plt.tight_layout()
-        plt.show()
+        plt.show();
+        
+    def plot_model_sample_fe(self, data, filename=None, fontsize=12):
+        #make sure data is provided in radians - quit if not
+        assert_radians(data)
+        # ignore divide by zero error message from numpy
+        np.seterr(divide = 'ignore') 
+        # Create the figure and subplots
+        fig, axes = plt.subplots(1, 1, figsize=(5, 5)) # 1 row, 1 column
+        # set some grid stuff
+        theta = np.linspace(-np.pi, np.pi, 200)
+        phi_mesh, psi_mesh = np.meshgrid(theta,theta)
+        phi_psi_grid = np.column_stack((phi_mesh.flatten(),psi_mesh.flatten()))
+    
+        # determine sample  FE
+        hist, xedges, yedges = np.histogram2d(data[:,0], data[:,1], bins=120, density=True)
+        x = 0.5*(xedges[1:] + xedges[:-1])
+        y = 0.5*(yedges[1:] + yedges[:-1])
+        Y, X = np.meshgrid(x,y)
+        sample_fe = -np.log(hist)
+        sample_fe -= np.amin(sample_fe)
+        
+        # determine model marginal FE
+        model_fe = -self.ln_pdf(phi_psi_grid).cpu().numpy()
+        model_fe -= np.amin(model_fe)
+        model_fe = model_fe.reshape(phi_mesh.shape)
+        # plot
+        title =  "FE (" + str(self.n_components) + " components)"
+ 
+        axes.pcolormesh(phi_mesh, psi_mesh, model_fe, cmap='hot_r', vmin=0, vmax=10.5)
+        axes.contour(X, Y, sample_fe,alpha=0.5)
+        # scatter means
+        axes.scatter(self.means_[:,0], self.means_[:,1], s=50*self.weights_)
+        axes.set_xlabel(r'$\phi$ (radians)', fontsize=fontsize)
+        axes.set_ylabel(r'$\psi$ (radians)', fontsize=fontsize)
+        axes.set_title(title, fontsize=fontsize)
+        axes.tick_params(labelsize=fontsize)
+
+        #plot params
+        plt.tight_layout()
+        # savefig if desired
+        if filename is not None:
+            plt.savefig(filename,dpi=80)
+        # Show the plot
+        plt.show();        
