@@ -1,5 +1,7 @@
 import torch
+from torch import vmap
 import matplotlib.pyplot as plt
+from torch.special import i0
 from scipy.special import iv, comb
 import sys
 
@@ -121,6 +123,7 @@ def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
 # TorchScript-compiled function for batched log-PDF computation.
 @torch.jit.script
 def batched_bvm_sine_ln_pdf(phi: torch.Tensor, psi: torch.Tensor, 
+                            diff_sin_prod: torch.Tensor,
                             means: torch.Tensor, kappas: torch.Tensor, 
                             norm_const: torch.Tensor) -> torch.Tensor:
     """
@@ -132,6 +135,8 @@ def batched_bvm_sine_ln_pdf(phi: torch.Tensor, psi: torch.Tensor,
         The φ values for each sample and component.
     psi : Tensor of shape (n_samples, n_components)
         The ψ values for each sample and component.
+    diff_sin_prod : Tensor of shape (n_samples, n_components)
+        Precomputed sin(phi-mu1)*sin(phi-mu2).
     means : Tensor of shape (n_components, 2)
         Mean angles for each component.
     kappas : Tensor of shape (n_components, 3)
@@ -156,7 +161,7 @@ def batched_bvm_sine_ln_pdf(phi: torch.Tensor, psi: torch.Tensor,
     
     exponent = (kappa1 * torch.cos(phi - mu1) +
                 kappa2 * torch.cos(psi - mu2) +
-                lam * torch.sin(phi - mu1) * torch.sin(psi - mu2))
+                lam * diff_sin_prod)
     return exponent - torch.log(norm_exp)
 
 class SineBVvMMM:
@@ -324,7 +329,7 @@ class SineBVvMMM:
                     kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
         return exponent - torch.log(C)
     
-    def _e_step(self, data):
+    def _e_step(self, data, diff_sin_prod):
         """
         Vectorized E-step that computes the log responsibilities and overall log-likelihood.
         Uses the TorchScript-compiled batched_bvm_sine_ln_pdf.
@@ -335,7 +340,7 @@ class SineBVvMMM:
         phi = data[:, 0].unsqueeze(1).expand(n_samples, self.n_components)
         psi = data[:, 1].unsqueeze(1).expand(n_samples, self.n_components)
         # Compute log PDF for each sample and component in one vectorized call.
-        log_pdf = batched_bvm_sine_ln_pdf(phi, psi, self.means_, self.kappas_, self.normalization_)
+        log_pdf = batched_bvm_sine_ln_pdf(phi, psi, diff_sin_prod, self.means_, self.kappas_, self.normalization_)
         # Add the log mixture weights.
         log_weights = torch.log(self.weights_).unsqueeze(0)  # shape (1, n_components)
         log_responsibilities = log_weights + log_pdf  # shape (n_samples, n_components)
@@ -406,8 +411,9 @@ class SineBVvMMM:
         # Use unsqueeze to broadcast to (n_samples, n_components).
         diff_phi = torch.sin(data[:, 0].unsqueeze(1) - mu_phi.unsqueeze(0))
         diff_psi = torch.sin(data[:, 1].unsqueeze(1) - mu_psi.unsqueeze(0))
+        diff_sin_prod = diff_phi * diff_psi
         # Weighted sum over samples for each component.
-        weighted_sum = torch.einsum('nk,nk->k', norm_resp, diff_phi * diff_psi)
+        weighted_sum = torch.einsum('nk,nk->k', norm_resp, diff_sin_prod)
         lambda_val = (kappa_phi * kappa_psi * weighted_sum) / (bessel_ratio_phi * bessel_ratio_psi)
 
         # Assemble the updated means and kappas.
@@ -416,7 +422,7 @@ class SineBVvMMM:
         # precompute normalization constants
         norms = self._calculate_normalization_constant(kappas)
         #norms = torch.tensor([self._calculate_normalization_constant(kappas[k]) for k in range(self.n_components)])
-        return weights, means, kappas, norms
+        return weights, means, kappas, norms, diff_sin_prod
 
     def fit(self, data, vectorize=True):
         """ Fit the model parameters using data """
@@ -432,13 +438,16 @@ class SineBVvMMM:
         self.means_ = torch.rand((self.n_components,2), device=self.device, dtype=self.dtype) * 2 * torch.pi - torch.pi
         self.kappas_ = torch.column_stack( (torch.ones((self.n_components,2), device=self.device, dtype=self.dtype),torch.zeros(self.n_components, device=self.device, dtype=self.dtype)))
         self.normalization_ = self._second_order_normalization_constant(self.kappas_)
-        
+        # precompute diff_sin_prod
+        diff_phi = torch.sin(data[:, 0].unsqueeze(1) - self.means_[:,0].unsqueeze(0))
+        diff_psi = torch.sin(data[:, 1].unsqueeze(1) - self.means_[:,1].unsqueeze(0))
+        diff_sin_prod = diff_phi * diff_psi
         # perform EM:
         old_ll = 0.0
         with torch.no_grad():  # Disable gradients
             for _ in range(self.max_iter):
-                responsibilities, ll = self._e_step(data)
-                self.weights_, self.means_, self.kappas_, self.normalization_  = self._m_step(data, sin_data, cos_data, responsibilities)
+                responsibilities, ll = self._e_step(data, diff_sin_prod)
+                self.weights_, self.means_, self.kappas_, self.normalization_, diff_sin_prod  = self._m_step(data, sin_data, cos_data, responsibilities)
                     
                 if self.verbose:
                     print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
