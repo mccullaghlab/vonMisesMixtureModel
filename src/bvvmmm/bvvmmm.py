@@ -130,15 +130,17 @@ class SineBVVMMM:
             m += 1
         return torch.tensor(C, device=self.device, dtype=self.dtype)
 
-    def _bvm_sine_pdf(self, phi, psi, means, kappas):
-        C = self._calculate_normalization_constant(kappas)
+    def _bvm_sine_pdf(self, phi, psi, means, kappas, C=None):
+        if C is None:
+            C = self._calculate_normalization_constant(kappas)
         exponent = (kappas[0] * torch.cos(phi - means[0]) +
                     kappas[1] * torch.cos(psi - means[1]) +
                     kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
         return torch.exp(exponent) / C
 
-    def _bvm_sine_ln_pdf(self, phi, psi, means, kappas):
-        C = self._calculate_normalization_constant(kappas)
+    def _bvm_sine_ln_pdf(self, phi, psi, means, kappas, C=None):
+        if C is None:
+            C = self._calculate_normalization_constant(kappas)
         exponent = (kappas[0] * torch.cos(phi - means[0]) +
                     kappas[1] * torch.cos(psi - means[1]) +
                     kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[0]))
@@ -186,12 +188,12 @@ class SineBVVMMM:
 
         return mu1, mu2, kappa1, kappa2, lambda_
 
-    def _m_step_vect(self, data, responsibilities):
+    def _m_step_vect(self, data, sin_data, cos_data, responsibilities):
         weights = responsibilities.sum(dim=0) / responsibilities.size(0)
 
-        # Precompute sin and cos values
-        sin_phi, cos_phi = torch.sin(data[:, 0]), torch.cos(data[:, 0])
-        sin_psi, cos_psi = torch.sin(data[:, 1]), torch.cos(data[:, 1])
+        #  sin and cos values
+        sin_phi, cos_phi = sin_data[:, 0], cos_data[:, 0]
+        sin_psi, cos_psi = sin_data[:, 1], cos_data[:, 1]
         # Expand inputs to match responsibility shape (n_components, n_samples)
         phi = data[:, 0].unsqueeze(0).expand(self.n_components, -1)
         psi = data[:, 1].unsqueeze(0).expand(self.n_components, -1)
@@ -204,6 +206,78 @@ class SineBVVMMM:
         
         means = torch.stack([means_kappas[0], means_kappas[1]], dim=1)
         kappas = torch.stack([means_kappas[2], means_kappas[3], means_kappas[4]], dim=1)
+
+        return weights, means, kappas
+
+
+    def _m_step_einsum(self, data, sin_data, cos_data, responsibilities):
+        """
+        Vectorized M-step using torch.einsum for a single pair of dihedral angles.
+
+        Parameters
+        ----------
+        data : torch.Tensor, shape (n_samples, 2)
+            Input data containing the dihedral angles (φ, ψ).
+        sin_data : torch.Tensor, shape (n_samples, 2)
+            Sine of input data containing  sin(φ, ψ).
+        cos_data : torch.Tensor, shape (n_samples, 2)
+            Cosine input data containing cos(φ, ψ).
+        responsibilities : torch.Tensor, shape (n_samples, n_components)
+            Responsibilities from the E-step.
+
+        Returns
+        -------
+        weights : torch.Tensor, shape (n_components,)
+            Updated mixture weights.
+        means : torch.Tensor, shape (n_components, 2)
+            Updated mean angles (μ_φ, μ_ψ) for each component.
+        kappas : torch.Tensor, shape (n_components, 3)
+            Updated concentration parameters (κ_φ, κ_ψ) and the correlation term (λ)
+            for each component.
+        """
+        n_samples = data.shape[0]
+        # Update weights: average responsibility for each component.
+        weights = responsibilities.sum(dim=0) / n_samples
+
+        # Normalize responsibilities per component: shape (n_samples, n_components)
+        norm_resp = responsibilities / responsibilities.sum(dim=0, keepdim=True)
+
+        # Compute weighted sums for φ (column 0) for each component using einsum.
+        S_phi = torch.einsum('nk,n->k', norm_resp, sin_data[:, 0])
+        C_phi = torch.einsum('nk,n->k', norm_resp, cos_data[:, 0])
+        # Similarly for ψ (column 1).
+        S_psi = torch.einsum('nk,n->k', norm_resp, sin_data[:, 1])
+        C_psi = torch.einsum('nk,n->k', norm_resp, cos_data[:, 1])
+
+        # Compute mean angles (μ) for each component.
+        mu_phi = torch.atan2(S_phi, C_phi)  # shape (n_components,)
+        mu_psi = torch.atan2(S_psi, C_psi)    # shape (n_components,)
+
+        # Compute resultant lengths (R) for φ and ψ.
+        R_phi = torch.sqrt(S_phi**2 + C_phi**2)
+        R_psi = torch.sqrt(S_psi**2 + C_psi**2)
+
+        # Estimate concentration parameters (κ) using the f4 approximation.
+        kappa_phi = (1.28 - 0.53 * R_phi**2) * torch.tan(0.5 * torch.pi * R_phi)
+        kappa_psi = (1.28 - 0.53 * R_psi**2) * torch.tan(0.5 * torch.pi * R_psi)
+
+        # Compute Bessel function ratios for κ.
+        bessel_ratio_phi = torch.special.i1(kappa_phi) / torch.special.i0(kappa_phi)
+        bessel_ratio_psi = torch.special.i1(kappa_psi) / torch.special.i0(kappa_psi)
+
+        # Compute the λ (correlation term) for each component.
+        # Compute differences between each data point and the component means.
+        # data[:,0] has shape (n_samples,) and mu_phi has shape (n_components,)
+        # Use unsqueeze to broadcast to (n_samples, n_components).
+        diff_phi = torch.sin(data[:, 0].unsqueeze(1) - mu_phi.unsqueeze(0))
+        diff_psi = torch.sin(data[:, 1].unsqueeze(1) - mu_psi.unsqueeze(0))
+        # Weighted sum over samples for each component.
+        weighted_sum = torch.einsum('nk,nk->k', norm_resp, diff_phi * diff_psi)
+        lambda_val = (kappa_phi * kappa_psi * weighted_sum) / (bessel_ratio_phi * bessel_ratio_psi)
+
+        # Assemble the updated means and kappas.
+        means = torch.stack([mu_phi, mu_psi], dim=1)         # shape (n_components, 2)
+        kappas = torch.stack([kappa_phi, kappa_psi, lambda_val], dim=1)  # shape (n_components, 3)
 
         return weights, means, kappas
 
@@ -241,7 +315,7 @@ class SineBVVMMM:
 
         return weights, means, kappas
 
-    def fit(self, data):
+    def fit(self, data, vectorize=True):
         """ Fit the model parameters using data """
         data = torch.tensor(data,device=self.device, dtype=self.dtype)
         # Precompute sin and cos values
@@ -257,8 +331,11 @@ class SineBVVMMM:
         with torch.no_grad():  # Disable gradients
             for _ in range(self.max_iter):
                 responsibilities, ll = self._e_step(data)
-                self.weights_, self.means_, self.kappas_ = self._m_step(data, sin_data, cos_data, responsibilities)
-                #self.weights_, self.means_, self.kappas_ = self._m_step_vect(data, responsibilities)
+                if vectorize == True:
+                    self.weights_, self.means_, self.kappas_ = self._m_step_einsum(data, sin_data, cos_data, responsibilities)
+                    #self.weights_, self.means_, self.kappas_ = self._m_step_vect(data, sin_data, cos_data, responsibilities)
+                else:
+                    self.weights_, self.means_, self.kappas_ = self._m_step(data, sin_data, cos_data, responsibilities)
             
                 if self.verbose:
                     print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
@@ -267,7 +344,6 @@ class SineBVVMMM:
                     break
                 old_ll = ll
         self.ll = ll
-
 
     def predict(self, data):
         data = torch.tensor(data,device=self.device, dtype=self.dtype)

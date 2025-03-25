@@ -122,7 +122,7 @@ def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
                       f"[{lower_bound}, {upper_bound}]. Ensure that the data is provided in radians.")
         sys.exit(1)
 
-class MultiSineBVVMMM:
+class IndependentSineBVvMMM:
     """
     Sine Bivariate von Mises Mixture Model Expectation-Maximization (EM) Algorithm
 
@@ -132,8 +132,8 @@ class MultiSineBVVMMM:
 
     Parameters
     ----------
-    n_components : int, default=2
-        The number of mixture components (clusters) to fit.
+    components : array int
+        The number of mixture components (clusters) to fit for each residue.
 
     max_iter : int, default=100
         The maximum number of EM iterations before convergence.
@@ -170,13 +170,15 @@ class MultiSineBVVMMM:
 
     Example
     -------
-    >>> model = MultiSineBVVMMM(n_components=3, max_iter=200, verbose=True, tol=1e-5, seed=1234)
+    >>> model = IndependentSineBVvMMM(n_components=3, max_iter=200, verbose=True, tol=1e-5, seed=1234)
     >>> model.fit(data)
     >>> model.plot_clusters(data)
     """
 
-    def __init__(self, n_components=2, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
-        self.n_components = n_components
+    def __init__(self, components, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
+        self.components = components
+        self.n_components = components.prod()
+        self.n_residues = components.size
         self.max_iter = max_iter
         self.tol = tol
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
@@ -382,7 +384,6 @@ class MultiSineBVVMMM:
         sin_data = torch.sin(data)
         cos_data = torch.cos(data)
         # grab metadata
-        self.n_residues = data.shape[1]
         self.n_data_points = data.shape[0]
         # initialize Model parameters
         self.weights_ = torch.full((self.n_components,), 1.0 / self.n_components, device=self.device, dtype=self.dtype)
