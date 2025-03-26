@@ -456,6 +456,8 @@ class SineBVvMMM:
                     break
                 old_ll = ll
         self.ll = ll
+        # sort by cluster weights
+        self.sort_clusters()
 
     def predict(self, data):
         # check data is in radians
@@ -464,6 +466,20 @@ class SineBVvMMM:
         data = torch.tensor(data, device=self.device, dtype=self.dtype)
         responsibilities, ll = self._e_step(data)
         return responsibilities.argmax(dim=1), ll
+
+    def sort_clusters(self):
+        """
+        Sort clusters by descending cluster weight. All corresponding parameters (means, kappas, normalization constants)
+        are rearranged accordingly.
+        """
+        # Get the sorted indices (descending order)
+        sorted_indices = torch.argsort(self.weights_, descending=True)
+        # Rearrange all cluster-level parameters using the sorted indices.
+        self.weights_ = self.weights_[sorted_indices]
+        self.means_ = self.means_[sorted_indices]
+        self.kappas_ = self.kappas_[sorted_indices]
+        if self.normalization_ is not None:
+            self.normalization_ = self.normalization_[sorted_indices]
 
     def ln_pdf(self, data):
         """ Compute ln pdf of the mixture for points """
