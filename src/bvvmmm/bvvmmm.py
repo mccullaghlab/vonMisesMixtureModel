@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import vmap
 import matplotlib.pyplot as plt
@@ -77,7 +78,9 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
         if cv_data is not None:
             temp_cv_ll = np.empty(n_attempts)
         models = []
-        for attempt in range(n_attempts):
+        # no need for more than 1 attempt for components=1
+        if comp == 1:
+            attempt = 0
             model = SineBVvMMM(n_components=comp, max_iter=200, verbose=False, tol=tol)
             # Fit using the training set only
             model.fit(train_data)
@@ -85,14 +88,30 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
             temp_ll[attempt] = model.ll.cpu().numpy()
             if cv_data is not None:
                 # Evaluate CV log likelihood on the held-out set.
-                # Note: model._e_step returns (responsibilities, log_likelihood)
-                _, cv_loglik = model._e_step(torch.tensor(cv_data, device=model.device, dtype=model.dtype))
+                # Note: model.predict returns (cluster_ids, log_likelihood)
+                _, cv_loglik = model.predict(cv_data)
                 temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
             if verbose == True:
                 print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
                   (f"CV LL: {temp_cv_ll[attempt]}" if cv_data is not None else ""))
-        # Choose the attempt with the highest training log likelihood
-        best_index = np.nanargmax(temp_ll)
+            best_index = 0
+        else:
+            for attempt in range(n_attempts):
+                model = SineBVvMMM(n_components=comp, max_iter=200, verbose=False, tol=tol)
+                # Fit using the training set only
+                model.fit(train_data)
+                models.append(model)
+                temp_ll[attempt] = model.ll.cpu().numpy()
+                if cv_data is not None:
+                    # Evaluate CV log likelihood on the held-out set.
+                    # Note: model.predict returns (cluster_ids, log_likelihood)
+                    _, cv_loglik = model.predict(cv_data)
+                    temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
+                if verbose == True:
+                    print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
+                      (f"CV LL: {temp_cv_ll[attempt]}" if cv_data is not None else ""))
+            # Choose the attempt with the highest training log likelihood
+            best_index = np.nanargmax(temp_ll)
         ll[i] = temp_ll[best_index]
         best_model = models[best_index]
         # plot
@@ -329,11 +348,16 @@ class SineBVvMMM:
                     kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
         return exponent - torch.log(C)
     
-    def _e_step(self, data, diff_sin_prod):
+    def _e_step(self, data, diff_sin_prod=None):
         """
         Vectorized E-step that computes the log responsibilities and overall log-likelihood.
         Uses the TorchScript-compiled batched_bvm_sine_ln_pdf.
         """
+        if diff_sin_prod is None:
+            # compute diff_sin_prod
+            diff_phi = torch.sin(data[:, 0].unsqueeze(1) - self.means_[:,0].unsqueeze(0))
+            diff_psi = torch.sin(data[:, 1].unsqueeze(1) - self.means_[:,1].unsqueeze(0))
+            diff_sin_prod = diff_phi * diff_psi
         n_samples = data.size(0)
         # data is shape (n_samples, 2)
         # Expand phi and psi to shape (n_samples, n_components)
@@ -507,10 +531,14 @@ class SineBVvMMM:
         assert_radians(data)
         # pass data to pyTorch
         data = torch.tensor(data,device=self.device, dtype=self.dtype)
+        # precompute diff_sin_prod
+        diff_phi = torch.sin(data[:, 0].unsqueeze(1) - self.means_[:,0].unsqueeze(0))
+        diff_psi = torch.sin(data[:, 1].unsqueeze(1) - self.means_[:,1].unsqueeze(0))
+        diff_sin_prod = diff_phi * diff_psi
         # Expand phi and psi to shape (n_samples, n_components)
         phi = data[:, 0].unsqueeze(1).expand(n_samples, self.n_components)
         psi = data[:, 1].unsqueeze(1).expand(n_samples, self.n_components)
-        log_pdf = batched_bvm_sine_ln_pdf(phi, psi, self.means_, self.kappas_, self.normalization_)
+        log_pdf = batched_bvm_sine_ln_pdf(phi, psi, diff_sin_prod, self.means_, self.kappas_, self.normalization_)
         # Add the log mixture weights.
         log_weights = torch.log(self.weights_).unsqueeze(0)  # shape (1, n_components)
         log_responsibilities = log_weights + log_pdf  # shape (n_samples, n_components)

@@ -3,6 +3,7 @@ README.md
 setup.py
 src/bvvmmm/__init__.py
 src/bvvmmm/bvvmmm.py
+src/bvvmmm/indep_bvvmmm.py
 src/bvvmmm/multi_bvvmmm.py
 src/vonMisesMixtureModel.egg-info/PKG-INFO
 src/vonMisesMixtureModel.egg-info/SOURCES.txt
