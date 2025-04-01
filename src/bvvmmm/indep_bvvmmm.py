@@ -149,7 +149,7 @@ class MultiIndSineBVvMMM:
         self.cluster_ids = np.empty((n_frames,self.n_residues),dtype=np.int64)
         for residue in range(self.n_residues):
             if verbose==True:
-                print("Fitting Residue ", residue+1)
+                print("Fitting Residue ", residue+1, " with ", self.components[residue], " components")
             model = bvvmmm.fit_with_attempts(data[:,residue,:],self.components[residue],n_attempts, verbose=verbose, device=self.device, dtype=self.dtype)
             self.cluster_ids[:,residue] = model.predict(data[:,residue,:])[0]
             self.residue_models_.append(model)
@@ -172,7 +172,7 @@ class MultiIndSineBVvMMM:
                     residue_range = cum_prod[residue-1]
                 for count in range(total_possible_states // cum_prod[residue]):
                     for component in range(self.components[-residue-1]):
-                        predicted_population[count*cum_prod[residue] + component*residue_range:count*cum_prod[residue] + (component+1)*residue_range] *= self.residue_models_[residue].weights_[component].cpu().numpy()
+                        predicted_population[count*cum_prod[residue] + component*residue_range:count*cum_prod[residue] + (component+1)*residue_range] *= self.residue_models_[-residue-1].weights_[component].cpu().numpy()
             # determine observed
             cum_prod = cum_prod[::-1]
             for macro_cluster in range(self.n_macro_states):
