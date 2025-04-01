@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from torch.special import i0
 from scipy.special import iv, comb
 import sys
+import warnings
 
 def fit_with_attempts(data, n_components, n_attempts, verbose=True, max_iter=200, tol=1e-5, device=None, dtype=torch.float64):
     """

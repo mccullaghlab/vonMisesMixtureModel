@@ -1,117 +1,21 @@
-import torch
-from functorch import vmap
+from . import bvvmmm
 import matplotlib.pyplot as plt
-from torch.special import i0
-from scipy.special import iv, comb
-import numpy as np
-import warnings
+import matplotlib.patches as patches
+import torch
 import sys
+import warnings
 
-def fit_with_attempts(data, n_components, n_attempts):
-    models = []
-    ll = np.empty(n_attempts)
-    for i in range(n_attempts):
-        model = MultiSineBVVMMM(n_components=n_components, max_iter=200, tol=1e-5)
-        model.fit(data)
-        models.append(model)
-        ll[i] = model.ll
-        print(i+1, ll[i])
-    return models[np.nanargmax(ll)]
+def pick_elbow_component(ll, component_range, thresh = 0.01):
 
-def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, verbose=True, plot=False):
-    """
-    Scan through different numbers of components by fitting multiple attempts
-    of the SineVMEM model and returning metrics including training log likelihood,
-    AIC, BIC, ICL, and (if using a validation split) the cross validation log likelihood.
-
-    Parameters
-    ----------
-    data : array-like, shape (n_data_points, n_residues, 2)
-        Input data for fitting.
-    components : array-like
-        A list or array of component counts to test.
-    n_attempts : int, default=15
-        Number of random initializations to try for each component count.
-    tol : float, default=1e-4
-        log likelihood tolerance for convergence
-    train_frac : float, default=1.0
-        Fraction of the data to use for training. If less than 1.0, the remainder
-        is held out as a cross validation (CV) set.
-
-    Returns
-    -------
-    ll : numpy.ndarray
-        Best (maximum) training log likelihood for each tested component count.
-    aic : numpy.ndarray
-        AIC value corresponding to the best training log likelihood.
-    bic : numpy.ndarray
-        BIC value corresponding to the best training log likelihood.
-    icl : numpy.ndarray
-        ICL value corresponding to the best training log likelihood.
-    cv_ll : numpy.ndarray (if train_frac < 1.0)
-        Cross validation log likelihood for each component count.
-    """
-    import numpy as np
-    import torch
-
-    n_total = data.shape[0]
-    if train_frac < 1.0:
-        n_train = int(train_frac * n_total)
-        # Randomly permute indices and split
-        permutation = np.random.permutation(n_total)
-        train_data = data[permutation[:n_train]]
-        cv_data = data[permutation[n_train:]]
-        print(f"Training on {n_train} samples and validating on {n_total - n_train} samples.")
+    #compute gradient of "normalized" log likelihood
+    grad = np.gradient(ll/(np.amax(ll) - np.amin(ll)))
+    # Elbow is the point right before fraction of information gained goes below the threshold
+    if np.any(grad < thresh):
+        elbow_index = np.amin(np.argwhere(grad < thresh)) - 1
+    # else set to last index
     else:
-        train_data = data
-        cv_data = None
-
-    n_comp = len(components)
-    ll = np.empty(n_comp)
-    aic = np.empty(n_comp)
-    bic = np.empty(n_comp)
-    icl = np.empty(n_comp)
-    if cv_data is not None:
-        cv_ll = np.empty(n_comp)
-
-    for i, comp in enumerate(components):
-        temp_ll = np.empty(n_attempts)
-        if cv_data is not None:
-            temp_cv_ll = np.empty(n_attempts)
-        models = []
-        for attempt in range(n_attempts):
-            model = MultiSineBVVMMM(n_components=comp, max_iter=200, verbose=False, tol=tol)
-            # Fit using the training set only
-            model.fit(train_data)
-            models.append(model)
-            temp_ll[attempt] = model.ll.cpu().numpy()
-            if cv_data is not None:
-                # Evaluate CV log likelihood on the held-out set.
-                # Note: model._e_step returns (responsibilities, log_likelihood)
-                _, cv_loglik = model._e_step(torch.tensor(cv_data, device=model.device, dtype=model.dtype))
-                temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
-            if verbose == True:
-                print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
-                  (f"CV LL: {temp_cv_ll[attempt]}" if cv_data is not None else ""))
-        # Choose the attempt with the highest training log likelihood
-        best_index = np.nanargmax(temp_ll)
-        ll[i] = temp_ll[best_index]
-        best_model = models[best_index]
-        # plot
-        if plot==True:
-            best_model.plot_model_sample_residue_marginal_fe(data)
-        # Compute the information criteria on the full data (or you could use train_data if preferred)
-        aic[i] = best_model.aic(data)
-        bic[i] = best_model.bic(data)
-        icl[i] = best_model.icl(data)
-        if cv_data is not None:
-            cv_ll[i] = temp_cv_ll[best_index]
-
-    if cv_data is not None:
-        return ll, aic, bic, icl, cv_ll
-    else:
-        return ll, aic, bic, icl
-
+        elbow_index = -1
+    return component_range[elbow_index]
 
 def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
     # Flatten the data for a global check
@@ -122,32 +26,30 @@ def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
                       f"[{lower_bound}, {upper_bound}]. Ensure that the data is provided in radians.")
         sys.exit(1)
 
-class IndependentSineBVvMMM:
+class MultiIndSineBVvMMM:
     """
     Sine Bivariate von Mises Mixture Model Expectation-Maximization (EM) Algorithm
 
-    This class implements an Expectation-Maximization (EM) algorithm for 
-    fitting a mixture model of Sine Bivariate von Mises (BVM) distributions 
+    This class implements an Expectation-Maximization (EM) algorithm for
+    fitting a mixture model of Sine Bivariate von Mises (BVM) distributions
     to circular data, such as protein backbone dihedral angles (phi, psi).
 
     Parameters
     ----------
-    components : array int
-        The number of mixture components (clusters) to fit for each residue.
 
     max_iter : int, default=100
         The maximum number of EM iterations before convergence.
 
     tol : float, default=1e-4
-        The convergence tolerance for log-likelihood improvement. The EM 
+        The convergence tolerance for log-likelihood improvement. The EM
         algorithm stops if the change in log-likelihood is smaller than this value.
 
     device : str, optional
-        The computation device, either 'cpu' or 'cuda'. If not specified, 
+        The computation device, either 'cpu' or 'cuda'. If not specified,
         it defaults to 'cuda' if a GPU is available; otherwise, it falls back to 'cpu'.
 
     dtype : torch.dtype, default=torch.float64
-        The precision type for computations. Double precision (float64) is 
+        The precision type for computations. Double precision (float64) is
         used by default to ensure numerical stability.
 
     seed : int, optional
@@ -170,15 +72,12 @@ class IndependentSineBVvMMM:
 
     Example
     -------
-    >>> model = IndependentSineBVvMMM(n_components=3, max_iter=200, verbose=True, tol=1e-5, seed=1234)
+    >>> model = MultiIndSineBVvMMM(n_components=3, max_iter=200, verbose=True, tol=1e-5, seed=1234)
     >>> model.fit(data)
     >>> model.plot_clusters(data)
     """
 
-    def __init__(self, components, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
-        self.components = components
-        self.n_components = components.prod()
-        self.n_residues = components.size
+    def __init__(self, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
         self.max_iter = max_iter
         self.tol = tol
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
@@ -187,385 +86,155 @@ class IndependentSineBVvMMM:
             self.seed = seed
             torch.manual_seed(seed)
         self.verbose = verbose
+        self.scan_flag_ = False
+        self.fit_flag_ = False
         self.weights_ = None
         self.kappas_ = None
         self.means_ = None
 
-    def _calculate_normalization_constant(self, kappas, thresh=1e-10, m_max=100):
-        """ Calculate the normalization constant of the Sine BVM using (hopefully) converging infinite sum 
-            NOTE: This is currently done on cpu-only using numpy because of the need of iv function
-        """
-        k1 = kappas[0].cpu().numpy()
-        k2 = kappas[1].cpu().numpy()
-        lam = kappas[2].cpu().numpy()
-        C = 0
-        diff = 1
-        m = 0
-        const = 4*np.pi**2
-        arg = lam ** 2 / (4 * k1 * k2)
-        while diff > thresh and m < m_max:
-            diff = const * comb(2 * m, m) * arg ** m * iv(m,k1) * iv(m,k2)
-            C += diff
-            m += 1
-        return torch.tensor(C, device=self.device, dtype=self.dtype)
+    def component_scan(self, data, components_scan=np.arange(1,8,1), n_attempts=15, train_frac=0.95):
 
-    def _bvm_sine_pdf(self, phi, psi, means, kappas):
-        C = self._calculate_normalization_constant(kappas)
-        exponent = (kappas[0] * torch.cos(phi - means[0]) +
-                    kappas[1] * torch.cos(psi - means[1]) +
-                    kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
-        return torch.exp(exponent) / C
+        self.components_scan = components_scan
+        self.n_components_scan = components_scan.size
+        self.n_residues = data.shape[1]
+        self.ll_scan = np.empty((self.n_components_scan,self.n_residues))
+        self.cv_ll_scan = np.empty((self.n_components_scan,self.n_residues))
+        self.icl_scan = np.empty((self.n_components_scan,self.n_residues))
+        self.components = np.empty(self.n_residues,dtype=np.int64)
+        # plot parameters
+        fontsize=12
+        for residue in range(self.n_residues):
+            self.ll_scan[:,residue], _, _, self.icl_scan[:,residue], self.cv_ll_scan[:,residue], best_models = bvvmmm.component_scan(data[:,residue,:], self.components_scan, n_attempts=n_attempts, tol=self.tol, device=self.device, dtype=self.dtype, train_frac=train_frac, verbose=False)
+            self.components[residue] = pick_elbow_component(self.ll_scan[:,residue], self.components_scan)
+            # plot!!!
+            fig, axes = plt.subplots(1, 2, figsize=(10, 5)) # 1 rows, 2 columns
+            # LL phi/psi 1
+            axes[0].plot(self.components_scan, self.ll_scan[:,residue], '-o', lw=3)
+            axes[0].plot(self.components_scan, self.cv_ll_scan[:,residue], '--', lw=2)
+            title = "Residue " + str(residue+1) + " LL vs n_components"
+            axes[0].set_title(title, fontsize=fontsize)
+            axes[0].set_xlabel('Number of Components',fontsize=fontsize)
+            axes[0].set_ylabel('LL',fontsize=fontsize)
+            axes[0].grid(True)
+            axes[0].tick_params(axis='both', labelsize=fontsize)
+            # attempt to circle the elbow
+            axes[0].scatter(self.components[residue],self.ll_scan[self.components_scan == self.components[residue],residue], s=500, marker='o', facecolors='none', edgecolors='r', linewidths=3)
+            # circle the elbow
+            #circle = patches.Circle((self.components[residue], self.ll_scan[self.components_scan == self.components[residue],residue]), radius, edgecolor='r', facecolor='none')
+            # Add the circle to the axes
+            #axes[0].add_patch(circle)
+            # plot fe
+            title = "Residue " + str(residue+1) + " model (color) + sample (contour) FE/kT"
+            best_models[np.argwhere(self.components_scan == self.components[residue])[0,0]].plot_model_sample_fe(data[:,residue,:],axes=axes[1],title=title)
+            # finish plot
+            plt.tight_layout()
+            plt.show();
+        self.total_components = self.components.sum()
+        self.scan_flag_ = True
+        print("Suggested components:", self.components)
 
-    def _bvm_sine_ln_pdf(self, phi, psi, means, kappas):
-        C = self._calculate_normalization_constant(kappas)
-        exponent = (kappas[0] * torch.cos(phi - means[0]) +
-                    kappas[1] * torch.cos(psi - means[1]) +
-                    kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
-        return exponent - torch.log(C)
-        
-    def _independent_bvm_sine_ln_pdf(self, phis, psis, means, kappas):
+    def fit(self, data, n_attempts = 15, components=None, verbose=True, plot=False):
+        """ fit BVvMMM to each residue with either provided components or components determined by scan """
+        # meta data
+        n_frames = data.shape[0]
+        self.n_residues = data.shape[1]
+        if components is not None:
+            self.components = components
+            self.total_components = components.sum()
+        elif self.scan_flag_ == False:
+            print("Need to either provide components for each residue or perform a scan")
 
-        ll = 0.0
-        for i in range(self.n_residues):
-            ll += self._bvm_sine_ln_pdf(phis[:,i], psis[:,i], means[i], kappas[i])
-        return ll
-    
-    def _e_step(self, data):
-        # compute log responsibilities
-        log_responsibilities = torch.stack([
-            torch.log(self.weights_[k]) + self._independent_bvm_sine_ln_pdf(data[:, :, 0], data[:, :, 1], self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        # log norm for each data point
-        log_norm = torch.logsumexp(log_responsibilities,dim=1,keepdim=True)
-        # log likelihood per data point
-        ll = torch.mean(log_norm)
-        # compute responsibilities
-        responsibilities = torch.exp(log_responsibilities - log_norm)
-        return responsibilities, ll
+        # fit each residue to their components
+        self.residue_models_ = []
+        self.cluster_ids = np.empty((n_frames,self.n_residues),dtype=np.int64)
+        for residue in range(self.n_residues):
+            if verbose==True:
+                print("Fitting Residue ", residue+1)
+            model = bvvmmm.fit_with_attempts(data[:,residue,:],self.components[residue],n_attempts, verbose=verbose, device=self.device, dtype=self.dtype)
+            self.cluster_ids[:,residue] = model.predict(data[:,residue,:])[0]
+            self.residue_models_.append(model)
 
-    def _m_step_vectorized(self, data, sin_data, cos_data, responsibilities):
-        """
-        Vectorized version of the M-step.
-    
-        Parameters
-        ----------
-        data : torch.Tensor, shape (n_samples, n_residues, 2)
-            Input data, where the last dimension holds (phi, psi).
-        sin_data : torch.Tensor, shape (n_samples, n_residues, 2)
-            Sine of input data, where the last dimension holds (sin(phi), sin(psi)).
-        cos_data : torch.Tensor, shape (n_samples, n_residues, 2)
-            Sine of input data, where the last dimension holds (cos(phi), cos(psi)).
-        responsibilities : torch.Tensor, shape (n_samples, n_components)
-            The responsibilities computed in the E-step.
-    
-        Returns
-        -------
-        weights : torch.Tensor, shape (n_components,)
-            Updated mixture weights.
-        means : torch.Tensor, shape (n_components, n_residues, 2)
-            Updated mean directions for each cluster and residue.
-        kappas : torch.Tensor, shape (n_components, n_residues, 3)
-            Updated concentration parameters (kappa1, kappa2) and lambda (correlation).
-        """
-        n_samples, n_residues, _ = data.shape
-        n_components = self.n_components
-
-        # Update weights: average responsibility for each component.
-        weights = responsibilities.sum(dim=0) / n_samples
-
-        # Normalize responsibilities for each component (shape: [n_samples, n_components])
-        norm_resp = responsibilities / responsibilities.sum(dim=0, keepdim=True)
-
-        # Extract phi and psi from data: shape (n_samples, n_residues)
-        data_phi = data[:, :, 0]
-        data_psi = data[:, :, 1]
-
-        # Extract sine and cosine values: shape (n_samples, n_residues)
-        sin_phi = sin_data[:, :, 0]
-        cos_phi = cos_data[:, :, 0]
-        sin_psi = sin_data[:, :, 1]
-        cos_psi = cos_data[:, :, 1]
-
-        # Compute weighted sums for phi using einsum:
-        # S_bar_phi: (n_components, n_residues)
-        S_bar_phi = torch.einsum('nk,nm->km', norm_resp, sin_phi)
-        C_bar_phi = torch.einsum('nk,nm->km', norm_resp, cos_phi)
-        mu1 = torch.atan2(S_bar_phi, C_bar_phi)  # Mean phi for each (component, residue)
-
-        # For psi:
-        S_bar_psi = torch.einsum('nk,nm->km', norm_resp, sin_psi)
-        C_bar_psi = torch.einsum('nk,nm->km', norm_resp, cos_psi)
-        mu2 = torch.atan2(S_bar_psi, C_bar_psi)  # Mean psi for each (component, residue)
-
-        # Compute resultant lengths
-        R1 = torch.sqrt(S_bar_phi**2 + C_bar_phi**2)  # (n_components, n_residues)
-        R2 = torch.sqrt(S_bar_psi**2 + C_bar_psi**2)    # (n_components, n_residues)
-
-        # Estimate kappas using the f4 approximation (Dobson 1978)
-        kappa1 = (1.28 - 0.53 * R1**2) * torch.tan(0.5 * torch.pi * R1)
-        kappa2 = (1.28 - 0.53 * R2**2) * torch.tan(0.5 * torch.pi * R2)
-
-        # Compute Bessel function ratios for each (component, residue)
-        bessel_ratio_k1 = torch.special.i1(kappa1) / torch.special.i0(kappa1)
-        bessel_ratio_k2 = torch.special.i1(kappa2) / torch.special.i0(kappa2)
-
-        # To compute lambda, we need the weighted sum of sin differences.
-        # Expand mu1 and mu2 to subtract from each data point.
-        # mu1 and mu2: (n_components, n_residues) -> (1, n_components, n_residues)
-        mu1_exp = mu1.unsqueeze(0)
-        mu2_exp = mu2.unsqueeze(0)
-        # Expand data to (n_samples, 1, n_residues)
-        data_phi_exp = data_phi.unsqueeze(1)
-        data_psi_exp = data_psi.unsqueeze(1)
-        # Compute differences: (n_samples, n_components, n_residues)
-        diff_phi = data_phi_exp - mu1_exp
-        diff_psi = data_psi_exp - mu2_exp
-
-        # Expand normalized responsibilities: (n_samples, n_components, 1)
-        norm_resp_exp = norm_resp.unsqueeze(2)
-        # Compute the weighted sum over samples for lambda numerator.
-        weighted_sum = torch.sum(norm_resp_exp * torch.sin(diff_phi) * torch.sin(diff_psi), dim=0)  # (n_components, n_residues)
-
-        # Compute lambda for each component and residue.
-        lambda_val = (kappa1 * kappa2 * weighted_sum) / (bessel_ratio_k1 * bessel_ratio_k2)
-
-        # Stack kappas into one tensor: shape (n_components, n_residues, 3)
-        kappas = torch.stack([kappa1, kappa2, lambda_val], dim=2)
-        # Stack means into one tensor: shape (n_components, n_residues, 2)
-        means = torch.stack([mu1, mu2], dim=2)
-
-        return weights, means, kappas
-
-    def _m_step(self, data, sin_data, cos_data, responsibilities):
-        # determine new cluster weights based on expectation step
-        weights = responsibilities.sum(dim=0) / responsibilities.size(0)
-        # declare empty parameter tensors
-        means = torch.empty((self.n_components, self.n_residues, 2),device=self.device, dtype=self.dtype)
-        kappas = torch.empty((self.n_components, self.n_residues, 3),device=self.device, dtype=self.dtype)
-        # determine new values of parameters
-        for k in range(self.n_components):
-            # Normalize frame weights for each cluster
-            resp = responsibilities[:, k]
-            resp /= resp.sum()
-            for m in range(self.n_residues):
-                # determine ML estimate of mu1
-                S_bar = (resp * sin_data[:,m,0]).sum()
-                C_bar = (resp * cos_data[:,m,0]).sum()
-                R1 = torch.sqrt(C_bar**2+S_bar**2) 
-                means[k,m,0] = torch.atan2(S_bar, C_bar)
-                # determine ML estimate of mu2
-                S_bar = (resp * sin_data[:,m,1]).sum()
-                C_bar = (resp * cos_data[:,m,1]).sum()
-                R2 = torch.sqrt(C_bar**2+S_bar**2) 
-                means[k,m,1] = torch.atan2(S_bar, C_bar)
-                # determine ML estimate of kappas currently assuming lambda is small (i.e. truncate sum at m=0)
-                # use f4 approximation (min error in Table 1) from Dobson 1978 to determine estimate of kappa1 and kappa2 - this assumes lambda is zero
-                kappas[k,m,0] = (1.28-0.53*R1**2)*torch.tan(0.5*torch.pi*R1)
-                kappas[k,m,1] = (1.28-0.53*R2**2)*torch.tan(0.5*torch.pi*R2)
-                # ML estimate of lambda
-                # Compute Bessel ratios
-                bessel_ratio_k1 = torch.special.i1(kappas[k,m,0]) / torch.special.i0(kappas[k,m,0])
-                bessel_ratio_k2 = torch.special.i1(kappas[k,m,1]) / torch.special.i0(kappas[k,m,1])
-                # Weighted estimate for lambda
-                kappas[k,m,2] = (kappas[k,m,0] * kappas[k,m,1] * (resp * torch.sin(data[:,m, 0] - means[k,m,0]) * torch.sin(data[:, m, 1] - means[k, m, 1])).sum()) / (bessel_ratio_k1 * bessel_ratio_k2)
-
-        return weights, means, kappas
-
-    def fit(self, data):
-        """ Fit the model parameters using data 
-            data should be of size n_data_points x n_residues x 2
-        """
-        # make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        # pass data to torch
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        # Precompute sin and cos values
-        sin_data = torch.sin(data)
-        cos_data = torch.cos(data)
-        # grab metadata
-        self.n_data_points = data.shape[0]
-        # initialize Model parameters
-        self.weights_ = torch.full((self.n_components,), 1.0 / self.n_components, device=self.device, dtype=self.dtype)
-        self.means_ = torch.rand((self.n_components,self.n_residues,2), device=self.device, dtype=self.dtype) * 2 * torch.pi - torch.pi
-        self.kappas_ =  torch.ones((self.n_components,self.n_residues,3), device=self.device, dtype=self.dtype)
-        self.kappas_[:,:,2] = 0.0
-        #self.kappas_ = torch.stack( (torch.ones((self.n_components,self.n_residues,2), device=self.device, dtype=self.dtype),torch.zeros((self.n_components,self.n_residues,1), device=self.device, dtype=self.dtype)),dim=2)
-
-        # perform EM:
-        old_ll = 0.0
-        with torch.no_grad():  # Disable gradients
-            for _ in range(self.max_iter):
-                responsibilities, ll = self._e_step(data)
-                self.weights_, self.means_, self.kappas_ = self._m_step_vectorized(data, sin_data, cos_data, responsibilities)
-            
-                if self.verbose:
-                    print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
-            
-                if torch.abs(ll - old_ll) < self.tol:
-                    break
-                old_ll = ll
-        self.ll = ll
-
+        # determine "macro" cluster ids and populations
+        self.macro_state_ids, self.macro_state_counts = np.unique(self.cluster_ids,axis=0,return_counts=True)
+        self.macro_state_weights_ = self.macro_state_counts / n_frames
+        self.n_macro_states = self.macro_state_counts.size
+        # if requested, compare indpendent expectation to observation of cluster populations
+        if plot == True:
+            total_possible_states = self.components.prod()
+            cum_prod = np.cumprod(self.components[::-1])
+            predicted_population = np.ones(total_possible_states)
+            observed_population = np.zeros(total_possible_states)
+            count = 0
+            for residue in range(self.n_residues):
+                if residue == 0:
+                    residue_range = 1
+                else:
+                    residue_range = cum_prod[residue-1]
+                for count in range(total_possible_states // cum_prod[residue]):
+                    for component in range(self.components[-residue-1]):
+                        predicted_population[count*cum_prod[residue] + component*residue_range:count*cum_prod[residue] + (component+1)*residue_range] *= self.residue_models_[residue].weights_[component].cpu().numpy()
+            # determine observed
+            cum_prod = cum_prod[::-1]
+            for macro_cluster in range(self.n_macro_states):
+                state_id = 0
+                for residue in range(self.n_residues-1):
+                    state_id += self.macro_state_ids[macro_cluster,residue]*cum_prod[residue+1]
+                state_id += self.macro_state_ids[macro_cluster,-1]
+                observed_population[state_id] = self.macro_state_weights_[macro_cluster]
+            # plot
+            plt.figure(figsize=(5,5))
+            fontsize=12
+            plt.bar(np.arange(total_possible_states),observed_population, label="observed")
+            plt.bar(np.arange(total_possible_states),predicted_population, alpha=0.75, label="predicted assuming independent")
+            plt.title('Macro State Populations',fontsize=fontsize)
+            plt.xlabel('Macro State ID',fontsize=fontsize)
+            plt.ylabel('Population',fontsize=fontsize)
+            plt.tick_params(axis='both', labelsize=fontsize)
+            plt.legend(fontsize=fontsize)
+            plt.tight_layout()
+            plt.show();
+        # update flag
+        self.fit_flag_ = True
 
     def predict(self, data):
-        # make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        # pass data to torch
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        responsibilities, ll = self._e_step(data)
-        return responsibilities.argmax(dim=1).cpu().numpy(), ll.cpu().numpy()
-        
-    def ln_pdf(self, data):
-        """ Compute ln pdf of the mixture for points """
-        # make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        # pass data to torch
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        ln_likelihoods_per_cluster = torch.stack([
-            torch.log(self.weights_[k]) + self._independent_bvm_sine_ln_pdf(data[:,:,0], data[:,:,1], self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        return torch.logsumexp(ln_likelihoods_per_cluster,1)
+        """ predict cluster ids """
+        # first check that the object has been fit
+        if not self.fit_flag_:
+            print("You must fit the object before you can predit")
+            sys.exit(1)
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
+        data = torch.tensor(data, device=self.device, dtype=self.dtype)
+        n_samples = data.shape[0]
+        # declare ln_pdf list
+        ln_pdf_list = []
+        for residue in range(self.n_residues):
+            # precompute diff_sin_prod
+            diff_phi = torch.sin(data[:, residue, 0].unsqueeze(1) - self.residue_models_[residue].means_[:,0].unsqueeze(0))
+            diff_psi = torch.sin(data[:, residue, 1].unsqueeze(1) - self.residue_models_[residue].means_[:,1].unsqueeze(0))
+            diff_sin_prod = diff_phi * diff_psi
+            # Vectorized log-PDF evaluation.
+            phi = data[:, residue, 0].unsqueeze(1).expand(n_samples, self.residue_models_[residue].n_components)
+            psi = data[:, residue, 1].unsqueeze(1).expand(n_samples, self.residue_models_[residue].n_components)
+            # compute ln pdf
+            ln_pdf = bvvmmm.batched_bvm_sine_ln_pdf(phi, psi, diff_sin_prod, self.residue_models_[residue].means_, self.residue_models_[residue].kappas_, self.residue_models_[residue].normalization_)
+            # add to list
+            ln_pdf_list.append(ln_pdf)
+        # compute macro state ln_pdf
+        macro_ln_pdf = torch.zeros((n_samples,self.n_macro_states), device=self.device, dtype=self.dtype)
+        for state in range(self.n_macro_states):
+            for residue in range(self.n_residues):
+                macro_ln_pdf[:,state] += ln_pdf_list[residue][:,self.macro_state_ids[state,residue]]
+        # return cluster ids
+        return macro_ln_pdf.argmax(dim=1).cpu().numpy()
 
-    def pdf(self, data):
-        """ Compute pdf of the mixture for points """
-        # make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        # pass data to torch
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        ln_likelihoods_per_cluster = torch.stack([
-            torch.log(self.weights_[k]) + self._independent_bvm_sine_ln_pdf(data[:,:,0], data[:,:,1], self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        return torch.sum(likelihoods_per_cluster,1).cpu().numpy()
-
-    def icl(self, data):
-        """Integrated completed likelihood per frame (McNicholas eq 4 and need to read citations)"""
-        n_frames = data.shape[0]
-        # make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        # pass data to torch
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        ln_likelihoods_per_cluster = torch.stack([
-            torch.log(self.weights_[k]) + self._independent_bvm_sine_ln_pdf(data[:,:,0], data[:,:,1], self.means_[k], self.kappas_[k]) 
-            for k in range(self.n_components)
-        ], dim=1)
-        ll = torch.mean(torch.logsumexp(ln_likelihoods_per_cluster,1)).cpu().numpy()
-        temp = torch.mean(torch.amax(ln_likelihoods_per_cluster,axis=1)).cpu().numpy()
-        return self.n_components*(1+5*self.n_residues)*np.log(n_frames)/n_frames - 2*ll - 2*temp
-
-    def bic(self, data):
-        """Bayesian Information Criterion per frame"""
-        n_frames = data.shape[0]
-        # make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        # pass data to torch
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        ll = self._e_step(data)[1].cpu().numpy()
-        return self.n_components*(1+5*self.n_residues)*np.log(n_frames)/n_frames - 2*ll 
-
-    def aic(self, data):
-        """Akaike Information Criterion per frame"""
-        n_frames = data.shape[0]
-        # make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        # pass data to torch
-        data = torch.tensor(data,device=self.device, dtype=self.dtype)
-        ll = self._e_step(data)[1].cpu().numpy()
-        return 2*self.n_components*(1+5*self.n_residues)/n_frames - 2*ll 
-    
-    def plot_scatter_clusters(self, data):
-        # make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        fontsize=12
-        clusters = self.predict(data)[0]
-        # make scatter plot colored by clustering
-        fig, axes = plt.subplots(1,self.n_residues,figsize=(5*self.n_residues,5))
-        if self.n_residues > 1:
-            for i, axis in enumerate(axes):
-                axis.scatter(data[:, i, 0], data[:, i, 1], c=clusters, cmap='tab10', s=10)
-                axis.set_xlabel(r'$\phi$ (radians)',fontsize=fontsize)
-                axis.set_ylabel(r'$\psi$ (radians)',fontsize=fontsize)
-                title = "Phi/Psi " + str(i+1) + "BVM with " + str(self.n_components) + " components"
-                axis.set_title(title, fontsize=fontsize)
-                axis.grid(True)
-                axis.tick_params(labelsize=fontsize)
-                axis.set_xlim(-np.pi,np.pi)
-                axis.set_ylim(-np.pi,np.pi)
-                axis.set_aspect('equal', 'box')
-        else:
-            axes.scatter(data[:, 0, 0], data[:, 0, 1], c=clusters, cmap='tab10', s=10)
-            axes.set_xlabel(r'$\phi$ (radians)',fontsize=fontsize)
-            axes.set_ylabel(r'$\psi$ (radians)',fontsize=fontsize)
-            title = "Phi/Psi BVM with " + str(self.n_components) + " components"
-            axes.set_title(title, fontsize=fontsize)
-            axes.grid(True)
-            axes.tick_params(labelsize=fontsize)
-            axes.set_xlim(-np.pi,np.pi)
-            axes.set_ylim(-np.pi,np.pi)
-            axes.set_aspect('equal', 'box')
-
-        plt.tight_layout()
-        plt.show()
-
-    def plot_model_sample_residue_marginal_fe(self, data, filename=None, fontsize=12):
-        #make sure data is provided in radians - quit if not
-        assert_radians(np.array(data))
-        # ignore divide by zero error message from numpy
-        np.seterr(divide = 'ignore') 
-        # Create the figure and subplots
-        fig, axes = plt.subplots(1, self.n_residues, figsize=(5*self.n_residues, 5), sharey=True) # 1 row, n_residue columns
-        # set some grid stuff
-        theta = np.linspace(-np.pi, np.pi, 200)
-        phi_mesh, psi_mesh = np.meshgrid(theta,theta)
-        phi_grid = torch.tensor(phi_mesh,device=self.device, dtype=self.dtype)
-        psi_grid = torch.tensor(psi_mesh,device=self.device, dtype=self.dtype)
-        # loop over residues
-        for i in range(self.n_residues):
-        
-            # determine sameple marginal FE
-            hist, xedges, yedges = np.histogram2d(data[:,i,0], data[:,i,1], bins=120, density=True)
-            x = 0.5*(xedges[1:] + xedges[:-1])
-            y = 0.5*(yedges[1:] + yedges[:-1])
-            Y, X = np.meshgrid(x,y)
-            sample_fe = -np.log(hist)
-            sample_fe -= np.amin(sample_fe)
-        
-            # determine model marginal FE
-            Z = torch.zeros_like(phi_grid)
-            for j in range(self.n_components):
-                Z += self.weights_[j]*self._bvm_sine_pdf(phi_grid,psi_grid,self.means_[j,i],self.kappas_[j,i])
-            Z = Z.cpu().numpy()
-            model_fe = -np.log(Z)
-            model_fe -= np.amin(model_fe)
-            
-            # plot
-            title = "Residue " + str(i+1) + " marginal FE (" + str(self.n_components) + " components)"
-            if self.n_residues > 1:
-                axes[i].pcolormesh(phi_mesh, psi_mesh, model_fe, cmap='hot_r', vmin=0, vmax=8)
-                axes[i].contour(X, Y, sample_fe,alpha=0.5)
-                axes[i].set_xlabel(r'$\phi$ (radians)', fontsize=fontsize)
-                if i==0:
-                    axes[i].set_ylabel(r'$\psi$ (radians)', fontsize=fontsize)
-                axes[i].set_title(title, fontsize=fontsize)
-                axes[i].tick_params(labelsize=fontsize)
-            else:
-                axes.pcolormesh(phi_mesh, psi_mesh, model_fe, cmap='hot_r', vmin=0, vmax=8)
-                axes.contour(X, Y, sample_fe,alpha=0.5)
-                axes.set_xlabel(r'$\phi$ (radians)', fontsize=fontsize)
-                if i==0:
-                    axes.set_ylabel(r'$\psi$ (radians)', fontsize=fontsize)
-                axes.set_title(title, fontsize=fontsize)
-                axes.tick_params(labelsize=fontsize)
-            
-        
-        
-        # Add color bar
-        #fig.colorbar(pm, label="Free Energy/kT")
-        plt.tight_layout()
-        # savefig if desired
-        if filename is not None:
-            plt.savefig(filename,dpi=80)
-        # Show the plot
-        plt.show();        
+    def plot_marginal_fes(self, data):
+        """ make plots of marginal fes for each residue """
+        # plot parameters
+        #fontsize=12
+        #fig, axes = plt.subplots(1, 2, figsize=(10, 5)) # 1 rows, 2 columns
+        for residue in range(self.n_residues):
+            # plot fe
+            title = "Residue " + str(residue+1) + " model (color) + sample (contour) FE/kT"
+            self.residue_models_[residue].plot_model_sample_fe(data[:,residue,:], title=title)
