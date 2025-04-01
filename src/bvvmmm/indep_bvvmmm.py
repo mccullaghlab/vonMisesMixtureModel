@@ -1,6 +1,6 @@
+import numpy as np
 from . import bvvmmm
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import torch
 import sys
 import warnings
