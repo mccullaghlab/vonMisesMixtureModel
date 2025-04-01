@@ -6,18 +6,56 @@ from torch.special import i0
 from scipy.special import iv, comb
 import sys
 
-def fit_with_attempts(data, n_components, n_attempts):
-    models = []
-    ll = np.empty(n_attempts)
+def fit_with_attempts(data, n_components, n_attempts, verbose=True, max_iter=200, tol=1e-5, device=None, dtype=torch.float64):
+    """
+    Repeatedly fit a SineBVvMMM model to data with multiple random initializations,
+    and return the model with the highest log-likelihood.
+
+    Parameters
+    ----------
+    data : ndarray or tensor
+        The input angular data.
+    n_components : int
+        Number of mixture components.
+    n_attempts : int
+        Number of fitting attempts (with different random initializations).
+    verbose : boolean, default=True
+        whether to print output information to stdout
+    max_iter : int, default=200
+        The maximum number of EM iterations allowed
+    tol : float, default=1e-5
+        The convergence tolerance for log-likelihood improvement. The EM 
+        algorithm stops if the change in log-likelihood is smaller than this value.
+
+    Returns
+    -------
+    best_model : SineBVvMMM
+        The model instance with the highest log-likelihood.
+    """
+    models = []                     # To store all fitted models
+    ll = np.empty(n_attempts)       # To store the log-likelihoods
+
+    if verbose == True:
+        print(f"{'Attempt':>8} | {'Log-Likelihood':>15}")
+        print("-" * 28)
+
     for i in range(n_attempts):
-        model = SineBVvMMM(n_components=n_components, max_iter=200, tol=1e-5)
+        # Initialize and fit model
+        model = SineBVvMMM(n_components=n_components, max_iter=max_iter, tol=tol, device=device, dtype=dtype)
         model.fit(data)
+
+        # Store model and its log-likelihood
         models.append(model)
         ll[i] = model.ll.cpu().numpy()
-        print(i+1, ll[i])
+        if verbose == True:
+            # Print formatted result for this attempt
+            print(f"{i + 1:>8} | {ll[i]:>15.6f}")
+
+    # Return the model with the highest log-likelihood
     return models[np.nanargmax(ll)]
 
-def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, verbose=True, plot=False):
+
+def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, verbose=True, plot=False, device=None, dtype=torch.float64):
     """
     Scan through different numbers of components by fitting multiple attempts
     of the SineVMEM model and returning metrics including training log likelihood,
@@ -49,6 +87,7 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
         ICL value corresponding to the best training log likelihood.
     cv_ll : numpy.ndarray (if train_frac < 1.0)
         Cross validation log likelihood for each component count.
+    best_models : list of best models
     """
     import numpy as np
     import torch
@@ -72,7 +111,7 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
     icl = np.empty(n_comp)
     if cv_data is not None:
         cv_ll = np.empty(n_comp)
-
+    best_models = []
     for i, comp in enumerate(components):
         temp_ll = np.empty(n_attempts)
         if cv_data is not None:
@@ -81,7 +120,7 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
         # no need for more than 1 attempt for components=1
         if comp == 1:
             attempt = 0
-            model = SineBVvMMM(n_components=comp, max_iter=200, verbose=False, tol=tol)
+            model = SineBVvMMM(n_components=comp, max_iter=200, verbose=False, tol=tol, device=device, dtype=dtype)
             # Fit using the training set only
             model.fit(train_data)
             models.append(model)
@@ -114,6 +153,7 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
             best_index = np.nanargmax(temp_ll)
         ll[i] = temp_ll[best_index]
         best_model = models[best_index]
+        best_models.append(best_model)
         # plot
         if plot==True:
             best_model.plot_model_sample_fe(data)
@@ -125,9 +165,9 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
             cv_ll[i] = temp_cv_ll[best_index]
 
     if cv_data is not None:
-        return ll, aic, bic, icl, cv_ll
+        return ll, aic, bic, icl, cv_ll, best_models
     else:
-        return ll, aic, bic, icl
+        return ll, aic, bic, icl, best_models
 
 
 def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
@@ -197,7 +237,7 @@ class SineBVvMMM:
         The number of mixture components (clusters) to fit.
 
     max_iter : int, default=100
-        The maximum number of EM iterations before convergence.
+        The maximum number of EM iterations allowed
 
     tol : float, default=1e-4
         The convergence tolerance for log-likelihood improvement. The EM 
@@ -590,13 +630,16 @@ class SineBVvMMM:
         plt.tight_layout()
         plt.show();
         
-    def plot_model_sample_fe(self, data, vmin=0, vmax=10, title=None, filename=None, fontsize=12):
+    def plot_model_sample_fe(self, data, vmin=0, vmax=10, title=None, axes=None, filename=None, fontsize=12):
         #make sure data is provided in radians - quit if not
         assert_radians(data)
         # ignore divide by zero error message from numpy
         np.seterr(divide = 'ignore') 
         # Create the figure and subplots
-        fig, axes = plt.subplots(1, 1, figsize=(5, 5)) # 1 row, 1 column
+        show_plot = False
+        if axes is None:
+            show_plot = True
+            fig, axes = plt.subplots(1, 1, figsize=(5, 5)) # 1 row, 1 column
         # set some grid stuff
         theta = np.linspace(-np.pi, np.pi, 200)
         phi_mesh, psi_mesh = np.meshgrid(theta,theta)
@@ -627,10 +670,12 @@ class SineBVvMMM:
         axes.set_title(title, fontsize=fontsize)
         axes.tick_params(labelsize=fontsize)
 
-        #plot params
-        plt.tight_layout()
         # savefig if desired
         if filename is not None:
             plt.savefig(filename,dpi=80)
-        # Show the plot
-        plt.show();        
+        # show plot if desired
+        if show_plot == True:
+            #plot params
+            plt.tight_layout()
+            # Show the plot
+            plt.show();        
