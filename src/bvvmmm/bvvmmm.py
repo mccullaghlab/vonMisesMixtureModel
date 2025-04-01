@@ -231,9 +231,9 @@ class SineBVvMMM:
 
     Example
     -------
-    >>> model = SineBVVMMM(n_components=3, max_iter=200, verbose=True, tol=1e-5, seed=1234)
+    >>> model = SineBVvMMM(n_components=3, max_iter=200, verbose=True, tol=1e-5, seed=1234)
     >>> model.fit(data)
-    >>> model.plot_clusters(data)
+    >>> model.plot_scatter_clusters(data)
     """
 
     def __init__(self, n_components=2, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
@@ -572,14 +572,15 @@ class SineBVvMMM:
         ll = self._e_step(data)[1].cpu().numpy()
         return self.n_components*12/n_frames - 2*ll 
     
-    def plot_scatter_clusters(self, data):
+    def plot_scatter_clusters(self, data, title=None):
         fontsize=12
         clusters = self.predict(data)[0].cpu().numpy()
         plt.figure(figsize=(6, 6))
         plt.scatter(data[:, 0], data[:, 1], c=clusters, cmap='tab10', s=10)
         plt.xlabel(r'$\phi$ (radians)',fontsize=fontsize)
         plt.ylabel(r'$\psi$ (radians)',fontsize=fontsize)
-        title = "BVM Mixture Model with " + str(self.n_components) + " components"
+        if title is None:
+            title = "BVvM Mixture Model with " + str(self.n_components) + " components"
         plt.title(title, fontsize=fontsize)
         plt.grid(True)
         plt.tick_params(labelsize=fontsize)
@@ -589,7 +590,7 @@ class SineBVvMMM:
         plt.tight_layout()
         plt.show();
         
-    def plot_model_sample_fe(self, data, filename=None, fontsize=12):
+    def plot_model_sample_fe(self, data, vmin=0, vmax=10, title=None, filename=None, fontsize=12):
         #make sure data is provided in radians - quit if not
         assert_radians(data)
         # ignore divide by zero error message from numpy
@@ -614,12 +615,13 @@ class SineBVvMMM:
         model_fe -= np.amin(model_fe)
         model_fe = model_fe.reshape(phi_mesh.shape)
         # plot
-        title =  "FE (" + str(self.n_components) + " components)"
+        if title is None:
+            title =  "FE/kT (" + str(self.n_components) + " components)"
  
-        axes.pcolormesh(phi_mesh, psi_mesh, model_fe, cmap='hot_r', vmin=0, vmax=10.5)
-        axes.contour(X, Y, sample_fe,alpha=0.5)
+        axes.pcolormesh(phi_mesh, psi_mesh, model_fe, cmap='hot_r', vmin=0, vmax=vmax)
+        axes.contour(X, Y, sample_fe,alpha=0.5, vmin=vmin, vmax=vmax)
         # scatter means
-        axes.scatter(self.means_[:,0], self.means_[:,1], s=50*self.weights_)
+        axes.scatter(self.means_[:,0], self.means_[:,1], s=80*self.weights_)
         axes.set_xlabel(r'$\phi$ (radians)', fontsize=fontsize)
         axes.set_ylabel(r'$\psi$ (radians)', fontsize=fontsize)
         axes.set_title(title, fontsize=fontsize)
