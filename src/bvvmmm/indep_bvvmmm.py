@@ -124,7 +124,7 @@ class MultiIndSineBVvMMM:
             # Add the circle to the axes
             #axes[0].add_patch(circle)
             # plot fe
-            title = "Residue " + str(residue+1) + str(self.components[residue]) + " components"
+            title = "Residue " + str(residue+1) + ", " + str(self.components[residue]) + " components"
             best_models[np.argwhere(self.components_scan == self.components[residue])[0,0]].plot_model_sample_fe(data[:,residue,:],axes=axes[1],title=title)
             # finish plot
             plt.tight_layout()
@@ -236,5 +236,7 @@ class MultiIndSineBVvMMM:
         #fig, axes = plt.subplots(1, 2, figsize=(10, 5)) # 1 rows, 2 columns
         for residue in range(self.n_residues):
             # plot fe
-            title = "Residue " + str(residue+1) + str(self.residue_models_[residue].n_componets) + " components"
+            title = "Residue " + str(residue+1) + ", " + str(self.residue_models_[residue].n_componets) + " components"
             self.residue_models_[residue].plot_model_sample_fe(data[:,residue,:], title=title)
+
+
