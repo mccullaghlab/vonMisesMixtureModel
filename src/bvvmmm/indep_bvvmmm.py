@@ -236,7 +236,7 @@ class MultiIndSineBVvMMM:
         #fig, axes = plt.subplots(1, 2, figsize=(10, 5)) # 1 rows, 2 columns
         for residue in range(self.n_residues):
             # plot fe
-            title = "Residue " + str(residue+1) + ", " + str(self.residue_models_[residue].n_componets) + " components"
+            title = "Residue " + str(residue+1) + ", " + str(self.residue_models_[residue].n_components) + " components"
             self.residue_models_[residue].plot_model_sample_fe(data[:,residue,:], title=title)
 
 
