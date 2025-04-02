@@ -647,7 +647,7 @@ class SineBVvMMM:
         phi_psi_grid = np.column_stack((phi_mesh.flatten(),psi_mesh.flatten()))
     
         # determine sample  FE
-        hist, xedges, yedges = np.histogram2d(data[:,0], data[:,1], bins=120, density=True)
+        hist, xedges, yedges = np.histogram2d(data[:,0], data[:,1], bins=np.linspace(-np.pi,np.pi,200), density=True)
         x = 0.5*(xedges[1:] + xedges[:-1])
         y = 0.5*(yedges[1:] + yedges[:-1])
         Y, X = np.meshgrid(x,y)
