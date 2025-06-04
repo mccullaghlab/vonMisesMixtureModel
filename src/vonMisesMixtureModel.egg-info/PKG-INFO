@@ -10,9 +10,13 @@ Project-URL: Bug Tracker, https://github.com/mccullaghlab/vonMisesMixtureModel/i
 Classifier: Programming Language :: Python :: 3
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Operating System :: OS Independent
-Requires-Python: >=3.6
+Requires-Python: >=3.8
 Description-Content-Type: text/markdown
 License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: torch>=2.0
+Requires-Dist: scipy
+Requires-Dist: matplotlib
 
 # vonMisesMixtureModel
 

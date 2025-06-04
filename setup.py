@@ -23,7 +23,7 @@ setuptools.setup(
     ],
     package_dir={"": "src"},
     packages=setuptools.find_packages(where="src"),
-    python_requires=">=3.6",
+    python_requires=">=3.8",
     license='MIT',
-    install_requires=['numpy','torch', 'scipy'],
+    install_requires=['numpy','torch>=2.0', 'scipy', 'matplotlib'],
 )
