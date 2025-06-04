@@ -4,6 +4,7 @@ from torch import vmap
 import matplotlib.pyplot as plt
 from torch.special import i0
 from scipy.special import iv, comb
+from scipy.optimize import minimize
 import sys
 import warnings
 
@@ -237,6 +238,11 @@ class SineBVvMMM:
     n_components : int, default=2
         The number of mixture components (clusters) to fit.
 
+    small_lambda : boolean, default=True
+        Boolean to dictate whether to use the small lambda approximation.  If False, numeric 
+        minimization of the LL is performed after the analytic minimization in the small lambda
+        approximation. 
+
     max_iter : int, default=100
         The maximum number of EM iterations allowed
 
@@ -277,8 +283,9 @@ class SineBVvMMM:
     >>> model.plot_scatter_clusters(data)
     """
 
-    def __init__(self, n_components=2, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
+    def __init__(self, n_components=2, small_lambda=True, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
         self.n_components = n_components
+        self.small_lambda = small_lambda
         self.max_iter = max_iter
         self.tol = tol
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
@@ -290,6 +297,43 @@ class SineBVvMMM:
         self.weights_ = None
         self.kappas_ = None
         self.means_ = None
+
+    def _calculate_normalization_constant_numpy(self, kappa1, kappa2, lam, thresh=1e-10, m_max=100):
+        """
+        Calculate the normalization constant C for the sine BVM using NumPy.
+
+        Parameters
+        ----------
+        kappa1 : float
+            Concentration parameter for phi.
+        kappa2 : float
+            Concentration parameter for psi.
+        lam : float
+            Correlation term.
+        thresh : float
+            Convergence threshold for infinite sum.
+        m_max : int
+            Maximum number of terms.
+
+        Returns
+        -------
+        C : float
+            Normalization constant.
+        """
+        C = 0.0
+        diff = 1.0
+        m = 0
+        const = 4 * np.pi**2
+        arg = lam**2 / (4 * kappa1 * kappa2)
+
+        while diff > thresh and m < m_max:
+            comb_term = comb(2*m, m)
+            diff = const * comb_term * (arg ** m) * iv(m, kappa1) * iv(m, kappa2)
+            C += diff
+            m += 1
+
+        return C
+
 
 
     def _calculate_normalization_constant(self, kappas, thresh=1e-10, m_max=100):
@@ -315,7 +359,7 @@ class SineBVvMMM:
             The normalization constant for each component.
         """
         # Move to CPU and convert to NumPy for SciPy functions.
-        kappas_np = kappas.cpu().numpy()
+        kappas_np = kappas.detach().cpu().numpy()
         k1 = kappas_np[:, 0]
         k2 = kappas_np[:, 1]
         lam = kappas_np[:, 2]
@@ -388,7 +432,101 @@ class SineBVvMMM:
                     kappas[1] * torch.cos(psi - means[1]) +
                     kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
         return exponent - torch.log(C)
-    
+        
+
+    def _nll_single_cluster_numpy(self, params, data, resp):
+        """
+        Negative log-likelihood for a single cluster using NumPy.
+
+        Parameters
+        ----------
+        params : ndarray, shape (5,)
+            [mu1, mu2, log(kappa1), log(kappa2), lambda].
+        data : ndarray, shape (n_samples, 2)
+            (phi, psi) data points in radians.
+        resp : ndarray, shape (n_samples,)
+            Responsibilities for the cluster.
+
+        Returns
+        -------
+        loss : float
+            Negative log-likelihood.
+        """
+        # Unpack and reparameterize
+        mu1, mu2, log_kappa1, log_kappa2, eta = params
+        kappa1 = np.exp(log_kappa1)
+        kappa2 = np.exp(log_kappa2)
+        lam = np.sqrt(kappa1*kappa2)*np.tanh(eta)
+
+        phi, psi = data[:, 0], data[:, 1]
+
+        # Exponent
+        exponent = (
+            kappa1 * np.cos(phi - mu1) +
+            kappa2 * np.cos(psi - mu2) +
+            lam * np.sin(phi - mu1) * np.sin(psi - mu2)
+        )
+
+        # Normalization constant
+        C = self._calculate_normalization_constant_numpy(kappa1, kappa2, lam)
+
+        # Log-likelihood per point
+        log_pdf = exponent - np.log(C)
+
+        # Weighted sum
+        nll = -np.sum(resp * log_pdf)
+
+        return nll
+
+    def _optimize_cluster_scipy(self, data, resp, initial_guess, max_iter=100):
+        """
+        Minimize NLL for a single cluster using SciPy minimize.
+
+        Parameters
+        ----------
+        data : ndarray, shape (n_samples, 2)
+            Input data (phi, psi).
+        resp : ndarray, shape (n_samples,)
+            Responsibilities for the cluster.
+        initial_guess : list or array
+            [mu1, mu2, kappa1, kappa2, lambda] starting values.
+
+        Returns
+        -------
+        optimized_params : ndarray
+            Optimized [mu1, mu2, kappa1, kappa2, lambda].
+        """
+
+        # Initial guess with log transform for kappas
+        mu1_init, mu2_init, kappa1_init, kappa2_init, lambda_init = initial_guess
+        x0 = np.array([mu1_init, mu2_init, np.log(kappa1_init + 1e-6), np.log(kappa2_init + 1e-6), np.arctanh(lambda_init/np.sqrt(kappa1_init*kappa2_init))])
+
+        # Bounds:
+        bounds = [
+            (-np.pi, np.pi),     # mu1
+            (-np.pi, np.pi),     # mu2
+            (None, None),        # log(kappa1) - unbounded
+            (None, None),        # log(kappa2) - unbounded
+            (None, None)         # eta - unbounded
+        ]
+
+        result = minimize(
+            self._nll_single_cluster_numpy,
+            x0,
+            args=(data, resp),
+            method='L-BFGS-B',
+            bounds=bounds,
+            options={'maxiter': max_iter}
+        )
+
+        # Extract optimized parameters
+        mu1_opt, mu2_opt, log_kappa1_opt, log_kappa2_opt, eta_opt = result.x
+        kappa1_opt = np.exp(log_kappa1_opt)
+        kappa2_opt = np.exp(log_kappa2_opt)
+        lambda_opt = np.sqrt(kappa1_opt*kappa2_opt)*np.tanh(eta_opt)
+        return torch.tensor([mu1_opt, mu2_opt, kappa1_opt, kappa2_opt, lambda_opt],dtype=self.dtype, device=self.device)
+
+        
     def _e_step(self, data, diff_sin_prod=None):
         """
         Vectorized E-step that computes the log responsibilities and overall log-likelihood.
@@ -484,13 +622,101 @@ class SineBVvMMM:
         # Assemble the updated means and kappas.
         means = torch.stack([mu_phi, mu_psi], dim=1)         # shape (n_components, 2)
         kappas = torch.stack([kappa_phi, kappa_psi, lambda_val], dim=1)  # shape (n_components, 3)
+ 
         # precompute normalization constants
         norms = self._calculate_normalization_constant(kappas)
         #norms = torch.tensor([self._calculate_normalization_constant(kappas[k]) for k in range(self.n_components)])
         return weights, means, kappas, norms, diff_sin_prod
 
-    def fit(self, data, vectorize=True):
-        """ Fit the model parameters using data """
+    def _m_step_numeric(self, data, responsibilities, initial_guess):
+        """
+        Numeric Minimizsation M-step for a single pair of dihedral angles.
+
+        Parameters
+        ----------
+        data : torch.Tensor, shape (n_samples, 2)
+            Input data containing the dihedral angles (φ, ψ).
+        responsibilities : torch.Tensor, shape (n_samples, n_components)
+            Responsibilities from the E-step.
+        initial_guess : numpy array, shape (n_components,5)
+           Initial guess for parameters (μ_φ, μ_ψ, κ_φ, κ_ψ, λ) of each component
+
+        Returns
+        -------
+        weights : torch.Tensor, shape (n_components,)
+            Updated mixture weights.
+        means : torch.Tensor, shape (n_components, 2)
+            Updated mean angles (μ_φ, μ_ψ) for each component.
+        kappas : torch.Tensor, shape (n_components, 3)
+            Updated concentration parameters (κ_φ, κ_ψ) and the correlation term (λ)
+            for each component.
+        """
+        n_samples = data.shape[0]
+        # Update weights: average responsibility for each component.
+        weights = responsibilities.sum(dim=0) / n_samples
+
+        # Normalize responsibilities per component: shape (n_samples, n_components)
+        norm_resp = responsibilities / responsibilities.sum(dim=0, keepdim=True)
+
+        # declare tensors
+        means = torch.empty((self.n_components,2),dtype=self.dtype, device=self.device)
+        kappas = torch.empty((self.n_components,3),dtype=self.dtype, device=self.device)
+    
+        # loop over components and compute optimal parameters using numeric minimization of LL
+        for k in range(self.n_components):
+            # Optimize with scipy
+            optimized_params = self._optimize_cluster_scipy(data.cpu().numpy(), norm_resp[:, k].cpu().numpy(), initial_guess[k])
+            # Assign back
+            means[k, 0], means[k, 1] = optimized_params[0], optimized_params[1]
+            kappas[k, 0], kappas[k, 1], kappas[k, 2] = optimized_params[2], optimized_params[3], optimized_params[4]
+        # precompute diff_sin_prod
+        diff_phi = torch.sin(data[:, 0].unsqueeze(1) - means[:,0].unsqueeze(0))
+        diff_psi = torch.sin(data[:, 1].unsqueeze(1) - means[:,1].unsqueeze(0))
+        diff_sin_prod = diff_phi * diff_psi
+        # precompute normalization constants
+        norms = self._calculate_normalization_constant(kappas)
+        return weights, means, kappas, norms, diff_sin_prod
+    
+    def fit(self, data):
+        """
+        Fit the Sine Bivariate von Mises Mixture Model (SineBVvMMM) to the given data using the 
+        Expectation-Maximization (EM) algorithm.
+
+        This method performs two phases of optimization:
+        (1) **Analytic Initialization Phase** (Small lambda approximation):
+            - Updates cluster parameters using closed-form moment estimators 
+            - Fast and guarantees initial unimodal solutions.
+
+        (2) **Numeric Refinement Phase** (Optional, if `small_lambda=False`):
+            - Refines the cluster parameters by directly minimizing the negative 
+              log-likelihood via numeric optimization (SciPy `L-BFGS-B`).
+            - Ensures high-accuracy parameter estimates without small lambda assumptions.
+            - Enforces unimodality through reparameterization of lambda via `tanh`.
+
+        Parameters
+        ----------
+        data : ndarray, shape (n_samples, 2)
+            Input data matrix where each row is a (phi, psi) dihedral angle pair in radians.
+            Values must be in the range [-π, π).
+
+        Notes
+        -----
+        - The data is internally converted to a PyTorch tensor with specified `device` and `dtype`.
+        - The method checks that data is in radians and warns if it is outside the expected range.
+        - Log-likelihood convergence is monitored based on the tolerance `tol`.
+        - The method records the final log-likelihood in `self.ll` and sorts clusters by weight after fitting.
+
+        Warnings
+        --------
+        A `UserWarning` is issued if the EM algorithm does not converge within `max_iter` iterations.
+
+        See Also
+        --------
+        predict : Predict the most likely cluster labels for new data.
+        ln_pdf : Compute the log-probability density function (log-pdf) for input data.
+        pdf : Compute the probability density function (pdf) for input data.
+        """
+
         # check data is in radians
         assert_radians(data)
         # pass data to pyTorch
@@ -511,20 +737,70 @@ class SineBVvMMM:
         old_ll = 0.0
         with torch.no_grad():  # Disable gradients
             for _ in range(self.max_iter):
+                # e-step
                 responsibilities, ll = self._e_step(data, diff_sin_prod)
+                # m-step
                 self.weights_, self.means_, self.kappas_, self.normalization_, diff_sin_prod  = self._m_step(data, sin_data, cos_data, responsibilities)
-                    
+    
                 if self.verbose:
                     print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
             
                 if torch.abs(ll - old_ll) < self.tol:
                     break
                 old_ll = ll
+            # refine with numeric minimization if requested (small_lambda == False)
+            if self.small_lambda == False:
+                for _ in range(self.max_iter):
+                    # Create initial guess array
+                    initial_guess_tensor = torch.cat([self.means_, self.kappas_], dim=1)  # shape (n_components, 5)
+                    initial_guess = initial_guess_tensor.cpu().numpy()
+                    self.weights_, self.means_, self.kappas_, self.normalization_, diff_sin_prod  = self._m_step_numeric(data, responsibilities, initial_guess)
+                    # e step
+                    responsibilities, ll = self._e_step(data, diff_sin_prod)
+                    if self.verbose:
+                        print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
+            
+                    if torch.abs(ll - old_ll) < self.tol:
+                        break
+                    old_ll = ll
+                    
         self.ll = ll
         # sort by cluster weights
         self.sort_clusters()
 
     def predict(self, data):
+        """
+        Assign the most likely cluster to each sample in the input data.
+
+        This method computes the posterior responsibilities for each data point and 
+        returns the cluster with the highest responsibility (i.e., maximum a posteriori estimate).
+
+        Parameters
+        ----------
+        data : ndarray, shape (n_samples, 2)
+            Input data matrix where each row is a (phi, psi) dihedral angle pair in radians.
+            Values must be within the range [-π, π).
+
+        Returns
+        -------
+        labels : torch.Tensor, shape (n_samples,)
+            The predicted cluster labels for each sample, as integer indices in [0, n_components - 1].
+
+        ll : torch.Tensor
+            The average log-likelihood of the input data under the fitted mixture model.
+
+        Notes
+        -----
+        - The input data is validated to ensure it is in radians and converted to a PyTorch tensor 
+          with the appropriate device and dtype.
+        - The cluster labels are determined by maximum posterior probability per sample.
+
+        See Also
+        --------
+        fit : Fit the model to data.
+        ln_pdf : Compute the log-probability density function (log-pdf) for input data.
+        pdf : Compute the probability density function (pdf) for input data.
+        """
         # check data is in radians
         assert_radians(data)
         # pass data to pyTorch
@@ -567,10 +843,13 @@ class SineBVvMMM:
 
     def pdf(self, data):
         """ Compute pdf of the mixture for points """
+        # check data is in radians
+        assert_radians(data)
+        #
         return torch.exp(self.ln_pdf(data)).cpu().numpy()
 
     def icl(self, data):
-        """Integrated completed likelihood per frame (McNicholas eq 4 and need to read citations)"""
+        """Integrated completed likelihood per frame (McNicholas eq 4)"""
         n_samples = data.shape[0]
         # check data is in radians
         assert_radians(data)
