@@ -1,0 +1,17 @@
+CONTRIBUTING.md
+LICENSE
+MANIFEST.in
+README.md
+pyproject.toml
+setup.cfg
+setup.py
+src/bvvmmm/__init__.py
+src/bvvmmm/core.py
+src/bvvmmm/utils.py
+src/bvvmmm.egg-info/PKG-INFO
+src/bvvmmm.egg-info/SOURCES.txt
+src/bvvmmm.egg-info/dependency_links.txt
+src/bvvmmm.egg-info/requires.txt
+src/bvvmmm.egg-info/top_level.txt
+tests/test_core.py
+tests/test_utils.py

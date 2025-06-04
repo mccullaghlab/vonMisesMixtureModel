@@ -1,8 +1,34 @@
+Metadata-Version: 2.4
+Name: bvvmmm
+Version: 0.1.0
+Summary: Bivariate von Mises Mixture Model for Circular Data Analysis
+Home-page: https://github.com/mccullaghlab/vonMisesMixtureModel
+Author: Martin McCullagh
+Author-email: martin.mccullagh@okstate.edu
+License: MIT
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Scientific/Engineering :: Information Analysis
+Classifier: Topic :: Scientific/Engineering :: Mathematics
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: torch>=2.0
+Requires-Dist: matplotlib
+Dynamic: license-file
+
 # vonMisesMixtureModel
 
-[![PyPI version](https://badge.fury.io/py/bvvmmm.svg)](https://badge.fury.io/py/bvvmmm)
-[![Python package](https://github.com/mccullaghlab/vonMisesMixtureModel/actions/workflows/python-package.yml/badge.svg)](https://github.com/mccullaghlab/vonMisesMixtureModel/actions/workflows/python-package.yml)
-[![Examples](https://img.shields.io/badge/Examples-Available-blue)](https://github.com/mccullaghlab/vonMisesMixtureModel/tree/main/examples)
+[![PyPI - License](https://img.shields.io/pypi/l/vonMisesMixtureModel)](LICENSE)
+[![Tests](https://github.com/mccullaghlab/vonMisesMixtureModel/actions/workflows/ci.yml/badge.svg)](https://github.com/mccullaghlab/vonMisesMixtureModel/actions)
 
 A PyTorch-based implementation of an Expectation-Maximization (EM) algorithm for fitting **mixtures of independent Sine Bivariate von Mises (BVM) distributions**. This package is designed for analyzing **circular data**, such as **pairs of phi/psi dihedral angles** in biomolecules or other angular systems.
 
