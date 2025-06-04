@@ -1,121 +1,142 @@
 # vonMisesMixtureModel
 
-A PyTorch-based implementation of a flexible Expectation-Maximization (EM) algorithm for fitting **mixtures of products of independent Sine Bivariate von Mises (BVM) distributions**. Designed for analyzing **circular data**, such as **multiple pairs of phi/psi dihedral angles** in biomolecules or other angular systems.
+[![PyPI - License](https://img.shields.io/pypi/l/vonMisesMixtureModel)](LICENSE)
+[![Tests](https://github.com/mccullaghlab/vonMisesMixtureModel/actions/workflows/ci.yml/badge.svg)](https://github.com/mccullaghlab/vonMisesMixtureModel/actions)
+
+A PyTorch-based implementation of an Expectation-Maximization (EM) algorithm for fitting **mixtures of independent Sine Bivariate von Mises (BVM) distributions**. This package is designed for analyzing **circular data**, such as **pairs of phi/psi dihedral angles** in biomolecules or other angular systems.
 
 ---
 
-## 📘 Overview
+## 📜 Overview
 
-This model generalizes the standard BVM mixture model to support **multiple independent bivariate angle pairs**, modeling the **joint probability** as a product of independent BVM distributions. It is ideal for problems where circular data (e.g., torsion angles) occur in structured pairs.
+This model fits mixtures of **Bivariate von Mises Sine distributions** on angular data pairs $(\phi, \psi)$ using a flexible and GPU-accelerated EM algorithm.
 
-### ✨ Features
+✅ **Features**:
 
-- 🔁 EM algorithm for clustering angular data
-- 🌀 Models **multiple phi/psi angle pairs**
-- 🔗 Assumes angle pairs are **independent across sites**
-- ⚡ GPU acceleration with PyTorch
-- 📈 Tools for prediction, scoring, and visualization
-- 🧪 Ready for integration into workflows for **protein modeling**, **robotics**, **directional statistics**, etc.
+* EM algorithm for clustering angular data
+* Supports **independent phi/psi angle pairs**
+* GPU acceleration via PyTorch
+* Analytic and numeric M-step updates
+* Model scoring: AIC, BIC, ICL
+* Visualization tools for fitted models
 
 ---
 
 ## 📦 Installation
 
-Clone the repo and install dependencies:
+Clone the repo and install:
 
 ```bash
 git clone https://github.com/mccullaghlab/vonMisesMixtureModel.git
 cd vonMisesMixtureModel
-python setup.py install
+pip install .
 ```
 
 **Dependencies**:
-- `torch`
-- `scipy`
-- `matplotlib`
-- `numpy`
+
+* `torch`
+* `numpy`
+* `scipy`
+* `matplotlib`
+* `pytest` (for running tests)
 
 ---
 
-## 🧠 Usage
+## 🧐 Usage
 
 ```python
-from multi_bvvmmm import MultiSineBVVMMM
+from bvvmmm.core import SineBVvMMM
 import numpy as np
 
-# Example: 1000 samples, 10 pairs of phi/psi angles
-N = 1000
-M = 10  # number of features (phi/psi pairs)
-data = np.random.uniform(-np.pi, np.pi, size=(N, M, 2))  # synthetic data
+# Example: Generate synthetic (phi, psi) data
+N = 1000  # number of samples
+data = np.random.uniform(-np.pi, np.pi, size=(N, 2))  # synthetic (phi, psi) data
 
 # Initialize model
-model = MultiSineBVVMMM(n_components=3, n_features=M, max_iter=100, verbose=True)
+model = SineBVvMMM(n_components=3, max_iter=100, tol=1e-5, verbose=True)
 
 # Fit the model
 model.fit(data)
 
 # Predict cluster assignments
-clusters, ll = model.predict(data)
+clusters, log_likelihood = model.predict(data)
 
-# Evaluate density or likelihood
+# Evaluate log-probabilities
 log_probs = model.ln_pdf(data)
+
+# Visualize clustering (for 2D data)
+model.plot_scatter_clusters(data)
 ```
 
 ---
 
-## 🧪 API Overview
+## 🧠 API Overview
 
-### `MultiSineBVVMMM(...)`
+### `SineBVvMMM(...)`
+
 Initialize the mixture model.
 
-| Parameter     | Description                                                  |
-|---------------|--------------------------------------------------------------|
-| `n_components`| Number of clusters                                           |
-| `n_features`  | Number of bivariate angle pairs (e.g., phi/psi sites)        |
-| `max_iter`    | Maximum EM iterations                                        |
-| `tol`         | Convergence threshold for log-likelihood                     |
-| `device`      | 'cuda' or 'cpu'                                              |
-| `verbose`     | If True, prints log-likelihood during training               |
+| Parameter      | Description                                   |
+| -------------- | --------------------------------------------- |
+| `n_components` | Number of clusters                            |
+| `small_lambda` | Use small lambda approximation (default True) |
+| `max_iter`     | Maximum EM iterations                         |
+| `tol`          | Convergence threshold for log-likelihood      |
+| `device`       | 'cuda' or 'cpu'                               |
+| `verbose`      | Print progress during fitting                 |
 
 ---
 
 ### 🔧 Key Methods
 
-| Method              | Description                                          |
-|---------------------|------------------------------------------------------|
-| `fit(data)`         | Fit model to angular data of shape `(N, M, 2)`       |
-| `predict(data)`     | Predict cluster assignments                          |
-| `ln_pdf(data)`      | Log-density under the fitted model                   |
-| `pdf(data)`         | Probability density under the fitted model           |
-| `plot_clusters(data)` | Visualize clustering (for `M=1`)                   |
+| Method                        | Description                                            |
+| ----------------------------- | ------------------------------------------------------ |
+| `fit(data)`                   | Fit model to angular data of shape `(N, 2)`            |
+| `predict(data)`               | Predict cluster assignments and compute log-likelihood |
+| `ln_pdf(data)`                | Log-density under the fitted model                     |
+| `pdf(data)`                   | Probability density under the fitted model             |
+| `aic(data)`                   | Akaike Information Criterion                           |
+| `bic(data)`                   | Bayesian Information Criterion                         |
+| `icl(data)`                   | Integrated Complete Likelihood                         |
+| `plot_scatter_clusters(data)` | Visualize 2D clusters                                  |
 
 ---
 
 ## 🧬 Applications
 
-- Protein conformation analysis (Ramachandran plots)
-- Directional statistics
-- Robotics and cyclic motion modeling
-- Meteorology and wind direction clustering
-- Geospatial or angular temporal pattern discovery
+* Protein backbone conformational clustering (Ramachandran analysis)
+* Directional data clustering (meteorology, geosciences)
+* Robotics joint angle analysis
+* Wind, wave, or cyclic time series clustering
+* Directional statistics in social and behavioral sciences
+
+---
+
+## 🛠️ Testing
+
+To run the unit tests:
+
+```bash
+pytest tests/
+```
 
 ---
 
 ## 📚 References
 
-- Mardia & Jupp (2009), *Directional Statistics*
-- Boomsma et al. (2008), *Bivariate von Mises for protein geometry*
-- Dobson (1978), *Estimating concentration in von Mises distributions*
+* Mardia & Jupp (2009), *Directional Statistics*
+* Boomsma et al. (2008), *Bivariate von Mises for protein geometry*
+* Dobson (1978), *Estimating concentration in von Mises distributions*
 
 ---
 
-## 🙌 Acknowledgments
+## 🙌 Contributing
 
-Developed by Martin McCullagh as part of research into high-dimensional circular clustering and protein conformational modeling.
+Contributions are welcome! Please open an issue or pull request if you'd like to contribute. A `CONTRIBUTING.md` will be added soon.
 
 ---
 
 ## 📄 License
 
-This project is licensed under the MIT License. See `LICENSE` for details.
+This project is licensed under the MIT License. See [`LICENSE`](LICENSE) for details.
 
