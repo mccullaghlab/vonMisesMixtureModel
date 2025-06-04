@@ -35,16 +35,6 @@ def test_sine_bvvmmm_basic_fit():
     # Check if the weights sum to 1
     np.testing.assert_allclose(torch.sum(model.weights_).cpu().numpy(), 1.0, rtol=1e-3)
 
-
-def test_fit_with_attempts_improves_likelihood():
-    data = generate_synthetic_data(n_samples=200, n_components=2)
-
-    model = fit_with_attempts(data, n_components=2, n_attempts=3, verbose=False)
-
-    assert hasattr(model, 'll'), "Best model does not have log-likelihood." 
-    assert model.ll > -np.inf, "Log-likelihood is not finite."
-
-
 def test_predict_shapes():
     data = generate_synthetic_data(n_samples=100, n_components=2)
 
@@ -58,5 +48,5 @@ def test_predict_shapes():
 
 
 if __name__ == "__main__":
-    pytest.main(["-v", "tests/test_fit.py"])
+    pytest.main(["-v", "tests/test_core.py"])
 

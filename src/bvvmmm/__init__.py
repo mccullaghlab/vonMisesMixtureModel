@@ -10,3 +10,8 @@ Provides:
 from .core import SineBVvMMM
 from .utils import fit_with_attempts, component_scan
 
+__all__ = [
+    "SineBVvMMM",
+    "fit_with_attempts",
+    "component_scan"
+]
