@@ -1,11 +1,16 @@
 Metadata-Version: 2.4
 Name: bvvmmm
-Version: 0.1.0
+Version: 0.1.1
 Summary: Bivariate von Mises Mixture Model for Circular Data Analysis
 Home-page: https://github.com/mccullaghlab/vonMisesMixtureModel
 Author: Martin McCullagh
 Author-email: martin.mccullagh@okstate.edu
 License: MIT
+Project-URL: Documentation, https://github.com/mccullaghlab/vonMisesMixtureModel#readme
+Project-URL: Source, https://github.com/mccullaghlab/vonMisesMixtureModel
+Project-URL: Bug Tracker, https://github.com/mccullaghlab/vonMisesMixtureModel/issues
+Project-URL: Examples, https://github.com/mccullaghlab/vonMisesMixtureModel/tree/main/examples
+Keywords: von Mises,mixture model,circular statistics,EM algorithm,directional statistics,clustering
 Classifier: Development Status :: 4 - Beta
 Classifier: Intended Audience :: Science/Research
 Classifier: License :: OSI Approved :: MIT License
@@ -27,8 +32,9 @@ Dynamic: license-file
 
 # vonMisesMixtureModel
 
-[![PyPI - License](https://img.shields.io/pypi/l/vonMisesMixtureModel)](LICENSE)
-[![Tests](https://github.com/mccullaghlab/vonMisesMixtureModel/actions/workflows/ci.yml/badge.svg)](https://github.com/mccullaghlab/vonMisesMixtureModel/actions)
+[![PyPI version](https://badge.fury.io/py/bvvmmm.svg)](https://badge.fury.io/py/bvvmmm)
+[![Python package](https://github.com/mccullaghlab/vonMisesMixtureModel/actions/workflows/python-package.yml/badge.svg)](https://github.com/mccullaghlab/vonMisesMixtureModel/actions/workflows/python-package.yml)
+[![Examples](https://img.shields.io/badge/Examples-Available-blue)](https://github.com/mccullaghlab/vonMisesMixtureModel/tree/main/examples)
 
 A PyTorch-based implementation of an Expectation-Maximization (EM) algorithm for fitting **mixtures of independent Sine Bivariate von Mises (BVM) distributions**. This package is designed for analyzing **circular data**, such as **pairs of phi/psi dihedral angles** in biomolecules or other angular systems.
 
