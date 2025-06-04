@@ -1,4 +1,6 @@
+CONTRIBUTING.md
 LICENSE
+MANIFEST.in
 README.md
 pyproject.toml
 setup.py
@@ -10,4 +12,5 @@ src/vonMisesMixtureModel.egg-info/SOURCES.txt
 src/vonMisesMixtureModel.egg-info/dependency_links.txt
 src/vonMisesMixtureModel.egg-info/requires.txt
 src/vonMisesMixtureModel.egg-info/top_level.txt
-tests/test_fit.py
+tests/test_core.py
+tests/test_utils.py
