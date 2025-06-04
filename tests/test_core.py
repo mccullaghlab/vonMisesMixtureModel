@@ -5,7 +5,6 @@ import torch
 import pytest
 
 from bvvmmm.core import SineBVvMMM
-from bvvmmm.utils import fit_with_attempts
 
 
 def generate_synthetic_data(n_samples=100, n_components=2, random_seed=42):
