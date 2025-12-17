@@ -75,11 +75,6 @@ class SineBVvMMM:
     n_components : int, default=2
         The number of mixture components (clusters) to fit.
 
-    small_lambda : boolean, default=True
-        Boolean to dictate whether to use the small lambda approximation.  If False, numeric 
-        minimization of the LL is performed after the analytic minimization in the small lambda
-        approximation. 
-
     max_iter : int, default=100
         The maximum number of EM iterations allowed
 
@@ -120,9 +115,8 @@ class SineBVvMMM:
     >>> model.plot_scatter_clusters(data)
     """
 
-    def __init__(self, n_components=2, small_lambda=True, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
+    def __init__(self, n_components=2, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
         self.n_components = n_components
-        self.small_lambda = small_lambda
         self.max_iter = max_iter
         self.tol = tol
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
@@ -519,16 +513,9 @@ class SineBVvMMM:
         Fit the Sine Bivariate von Mises Mixture Model (SineBVvMMM) to the given data using the 
         Expectation-Maximization (EM) algorithm.
 
-        This method performs two phases of optimization:
-        (1) **Analytic Initialization Phase** (Small lambda approximation):
+        This method performs **Analytic EM** (Small lambda approximation):
             - Updates cluster parameters using closed-form moment estimators 
-            - Fast and guarantees initial unimodal solutions.
-
-        (2) **Numeric Refinement Phase** (Optional, if `small_lambda=False`):
-            - Refines the cluster parameters by directly minimizing the negative 
-              log-likelihood via numeric optimization (SciPy `L-BFGS-B`).
-            - Ensures high-accuracy parameter estimates without small lambda assumptions.
-            - Enforces unimodality through reparameterization of lambda via `tanh`.
+            - Fast and guarantees unimodal solutions.
 
         Parameters
         ----------
@@ -585,21 +572,77 @@ class SineBVvMMM:
                 if torch.abs(ll - old_ll) < self.tol:
                     break
                 old_ll = ll
-            # refine with numeric minimization if requested (small_lambda == False)
-            if self.small_lambda == False:
-                for _ in range(self.max_iter):
-                    # Create initial guess array
-                    initial_guess_tensor = torch.cat([self.means_, self.kappas_], dim=1)  # shape (n_components, 5)
-                    initial_guess = initial_guess_tensor.cpu().numpy()
-                    self.weights_, self.means_, self.kappas_, self.normalization_, diff_sin_prod  = self._m_step_numeric(data, responsibilities, initial_guess)
-                    # e step
-                    responsibilities, ll = self._e_step(data, diff_sin_prod)
-                    if self.verbose:
-                        print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
+        self.ll = ll
+        # sort by cluster weights
+        self.sort_clusters()
+
+
+
+    def refine(self, data):
+        """
+        Refine the Sine Bivariate von Mises Mixture Model (SineBVvMMM) to the given data using the 
+        Expectation-Maximization (EM) algorithm with numeric minimization (not assuming small lambda).
+
+        (2) **Numeric Refinement Phase** (Optional):
+            - Refines the cluster parameters by directly minimizing the negative 
+              log-likelihood via numeric optimization (SciPy `L-BFGS-B`).
+            - Ensures high-accuracy parameter estimates without small lambda assumptions.
+            - Enforces unimodality through reparameterization of lambda via `tanh`.
+
+        Parameters
+        ----------
+        data : ndarray, shape (n_samples, 2)
+            Input data matrix where each row is a (phi, psi) dihedral angle pair in radians.
+            Values must be in the range [-π, π).
+
+        Notes
+        -----
+        - The data is internally converted to a PyTorch tensor with specified `device` and `dtype`.
+        - The method checks that data is in radians and warns if it is outside the expected range.
+        - Log-likelihood convergence is monitored based on the tolerance `tol`.
+        - The method records the final log-likelihood in `self.ll` and sorts clusters by weight after fitting.
+
+        Warnings
+        --------
+        A `UserWarning` is issued if the EM algorithm does not converge within `max_iter` iterations.
+
+        See Also
+        --------
+        fit : fit with analytic moments
+        predict : Predict the most likely cluster labels for new data.
+        ln_pdf : Compute the log-probability density function (log-pdf) for input data.
+        pdf : Compute the probability density function (pdf) for input data.
+        """
+
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
+        data = torch.tensor(data,device=self.device, dtype=self.dtype)
+        # Precompute sin and cos values
+        sin_data = torch.sin(data)
+        cos_data = torch.cos(data)
+        #  Model parameters are initialized by analytic fitting
+        # precompute diff_sin_prod
+        diff_phi = torch.sin(data[:, 0].unsqueeze(1) - self.means_[:,0].unsqueeze(0))
+        diff_psi = torch.sin(data[:, 1].unsqueeze(1) - self.means_[:,1].unsqueeze(0))
+        diff_sin_prod = diff_phi * diff_psi
+        # perform EM:
+        old_ll = self.ll
+        with torch.no_grad():  # Disable gradients
+            # refine with numeric minimization 
+            for _ in range(self.max_iter):
+                # Create initial guess array
+                initial_guess_tensor = torch.cat([self.means_, self.kappas_], dim=1)  # shape (n_components, 5)
+                initial_guess = initial_guess_tensor.cpu().numpy()
+                self.weights_, self.means_, self.kappas_, self.normalization_, diff_sin_prod  = self._m_step_numeric(data, responsibilities, initial_guess)
+                # e step
+                responsibilities, ll = self._e_step(data, diff_sin_prod)
+                if self.verbose:
+                    print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
             
-                    if torch.abs(ll - old_ll) < self.tol:
-                        break
-                    old_ll = ll
+                if torch.abs(ll - old_ll) < self.tol:
+                    break
+                old_ll = ll
                     
         self.ll = ll
         # sort by cluster weights
