@@ -40,11 +40,11 @@ def fit_with_attempts(data, n_components, n_attempts, verbose=True, max_iter=200
     for i in range(n_attempts):
         # Initialize and fit model
         model = VonMisesMixture(n_components=n_components, max_iter=max_iter, tol=tol)#, device=device, dtype=dtype)
-        _, ll_temp = model.fit(data)
+        model.fit(data)
 
         # Store model and its log-likelihood
         models.append(model)
-        ll[i] = ll_temp
+        ll[i] = model.score(data)
         if verbose == True:
             # Print formatted result for this attempt
             print(f"{i + 1:>8} | {ll[i]:>15.6f}")
@@ -120,14 +120,13 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
             attempt = 0
             model = VonMisesMixture(n_components=comp, max_iter=200, tol=tol)#, device=device, dtype=dtype)
             # Fit using the training set only
-            _, ll_temp = model.fit(train_data)
+            model.fit(train_data)
             models.append(model)
-            temp_ll[attempt] = ll_temp
+            temp_ll[attempt] = model.score(train_data)
             if cv_data is not None:
                 # Evaluate CV log likelihood on the held-out set.
                 # Note: model.predict returns (cluster_ids, log_likelihood)
-                _, cv_loglik = model.predict(cv_data)
-                temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
+                temp_cv_ll[attempt] = model.score(cv_data)
             if verbose == True:
                 print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
                   (f"CV LL: {temp_cv_ll[attempt]}" if cv_data is not None else ""))
@@ -136,14 +135,13 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
             for attempt in range(n_attempts):
                 model = VonMisesMixture(n_components=comp, max_iter=200, tol=tol)
                 # Fit using the training set only
-                _, ll_temp = model.fit(train_data)
+                model.fit(train_data)
                 models.append(model)
-                temp_ll[attempt] = ll_temp
+                temp_ll[attempt] = model.score(train_data)
                 if cv_data is not None:
                     # Evaluate CV log likelihood on the held-out set.
                     # Note: model.predict returns (cluster_ids, log_likelihood)
-                    _, cv_loglik = model.predict(cv_data)
-                    temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
+                    temp_cv_ll[attempt] = model.score(cv_data)
                 if verbose == True:
                     print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
                       (f"CV LL: {temp_cv_ll[attempt]}" if cv_data is not None else ""))
