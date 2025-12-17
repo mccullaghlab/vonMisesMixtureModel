@@ -1,5 +1,6 @@
 # Optimized version of the Von Mises Mixture Model using EM
 from scipy.special import i0
+import numpy as np
 
 class VonMisesMixture:
 
