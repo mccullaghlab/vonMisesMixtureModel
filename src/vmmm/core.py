@@ -242,5 +242,5 @@ class VonMisesMixture:
                                              loc=self.mu_[k],
                                              size=n_k,
                                              random_state=self.random_state)
-        return samples, comp
+        return samples
 

@@ -1,4 +1,4 @@
-Metadata-Version: 2.4
+Metadata-Version: 2.1
 Name: bvvmmm
 Version: 0.1.1
 Summary: Bivariate von Mises Mixture Model for Circular Data Analysis
@@ -28,7 +28,6 @@ Requires-Dist: numpy
 Requires-Dist: scipy
 Requires-Dist: torch>=2.0
 Requires-Dist: matplotlib
-Dynamic: license-file
 
 # vonMisesMixtureModel
 
