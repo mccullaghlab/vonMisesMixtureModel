@@ -40,8 +40,17 @@ def test_predict_shapes():
     model = SineBVvMMM(n_components=2, max_iter=50, tol=1e-4, verbose=False)
     model.fit(data)
 
-    labels, ll = model.predict(data)
+    labels = model.predict(data)
     assert labels.shape[0] == data.shape[0], "Number of labels does not match number of samples."
+
+
+def test_score_shapes():
+    data = generate_synthetic_data(n_samples=100, n_components=2)
+
+    model = SineBVvMMM(n_components=2, max_iter=50, tol=1e-4, verbose=False)
+    model.fit(data)
+
+    ll = model.score(data)
     assert isinstance(ll, torch.Tensor), "Log-likelihood is not a torch tensor."
     assert ll.dim() == 0, "Log-likelihood should be a scalar."
 
