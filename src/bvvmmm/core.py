@@ -666,9 +666,6 @@ class SineBVvMMM:
         labels : torch.Tensor, shape (n_samples,)
             The predicted cluster labels for each sample, as integer indices in [0, n_components - 1].
 
-        ll : torch.Tensor
-            The average log-likelihood of the input data under the fitted mixture model.
-
         Notes
         -----
         - The input data is validated to ensure it is in radians and converted to a PyTorch tensor 
@@ -686,7 +683,41 @@ class SineBVvMMM:
         # pass data to pyTorch
         data = torch.tensor(data, device=self.device, dtype=self.dtype)
         responsibilities, ll = self._e_step(data)
-        return responsibilities.argmax(dim=1), ll
+        return responsibilities.argmax(dim=1)
+
+    def score(self, data):
+        """
+        Calculate ll per frame of model on data
+
+        Parameters
+        ----------
+        data : ndarray, shape (n_samples, 2)
+            Input data matrix where each row is a (phi, psi) dihedral angle pair in radians.
+            Values must be within the range [-π, π).
+
+        Returns
+        -------
+        ll : torch.Tensor
+            The average log-likelihood of the input data under the fitted mixture model.
+
+        Notes
+        -----
+        - The input data is validated to ensure it is in radians and converted to a PyTorch tensor 
+          with the appropriate device and dtype.
+
+        See Also
+        --------
+        predict : Assign labels
+        fit : Fit the model to data.
+        ln_pdf : Compute the log-probability density function (log-pdf) for input data.
+        pdf : Compute the probability density function (pdf) for input data.
+        """
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
+        data = torch.tensor(data, device=self.device, dtype=self.dtype)
+        responsibilities, ll = self._e_step(data)
+        return ll
 
     def sort_clusters(self):
         """
