@@ -626,14 +626,15 @@ class SineBVvMMM:
         diff_phi = torch.sin(data[:, 0].unsqueeze(1) - self.means_[:,0].unsqueeze(0))
         diff_psi = torch.sin(data[:, 1].unsqueeze(1) - self.means_[:,1].unsqueeze(0))
         diff_sin_prod = diff_phi * diff_psi
-        # perform EM:
-        old_ll = self.ll
+        # e step
+        responsibilities, old_ll = self._e_step(data, diff_sin_prod)
         with torch.no_grad():  # Disable gradients
             # refine with numeric minimization 
             for _ in range(self.max_iter):
                 # Create initial guess array
                 initial_guess_tensor = torch.cat([self.means_, self.kappas_], dim=1)  # shape (n_components, 5)
                 initial_guess = initial_guess_tensor.cpu().numpy()
+                # perform numerical M step
                 self.weights_, self.means_, self.kappas_, self.normalization_, diff_sin_prod  = self._m_step_numeric(data, responsibilities, initial_guess)
                 # e step
                 responsibilities, ll = self._e_step(data, diff_sin_prod)
