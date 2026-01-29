@@ -781,8 +781,15 @@ class SineBVvMMM:
         # Compute normalization over components.
         log_norm = torch.logsumexp(log_responsibilities, dim=1, keepdim=True)
         ll = torch.mean(log_norm)
-        temp = torch.mean(torch.amax(log_responsibilities,axis=1)).cpu().numpy()
-        return self.n_components*6*np.log(n_samples)/n_samples - 2*ll - 2*temp
+        # posterior responsibilities τ_ik
+        log_tau = log_responsibilities - log_norm
+        tau = torch.exp(log_tau)
+        # entropy term: -sum τ log τ  (per sample)
+        entropy_per = -torch.mean(torch.sum(tau * log_tau, dim=1))
+        # BIC
+        bic_per  = -2*ll + (self.n_components*6-1)*np.log(n_samples)/n_samples
+        return (bic_per - 2.0 * entropy_per).detach().cpu().numpy()
+
 
     def bic(self, data):
         """Bayesian Information Criterion per frame"""
