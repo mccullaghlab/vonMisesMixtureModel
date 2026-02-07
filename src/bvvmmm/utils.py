@@ -126,8 +126,7 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
             temp_ll[attempt] = model.ll.cpu().numpy()
             if cv_data is not None:
                 # Evaluate CV log likelihood on the held-out set.
-                # Note: model.predict returns (cluster_ids, log_likelihood)
-                _, cv_loglik = model.predict(cv_data)
+                cv_loglik = model.score(cv_data)
                 temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
             if verbose == True:
                 print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +
@@ -142,8 +141,7 @@ def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, ve
                 temp_ll[attempt] = model.ll.cpu().numpy()
                 if cv_data is not None:
                     # Evaluate CV log likelihood on the held-out set.
-                    # Note: model.predict returns (cluster_ids, log_likelihood)
-                    _, cv_loglik = model.predict(cv_data)
+                    cv_loglik = model.score(cv_data)
                     temp_cv_ll[attempt] = cv_loglik.cpu().numpy()
                 if verbose == True:
                     print(f"Components: {comp}, Attempt: {attempt+1}, Training LL: {temp_ll[attempt]}, " +

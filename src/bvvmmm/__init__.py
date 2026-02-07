@@ -7,11 +7,12 @@ Provides:
 - component_scan: Grid search over different numbers of mixture components.
 """
 
-from .core import SineBVvMMM
+from .core import SineBVvMMM, batched_bvm_sine_ln_pdf
 from .utils import fit_with_attempts, component_scan
 
 __all__ = [
     "SineBVvMMM",
     "fit_with_attempts",
-    "component_scan"
+    "component_scan",
+    "batched_bvm_sine_ln_pdf"
 ]

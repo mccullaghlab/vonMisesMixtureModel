@@ -1,17 +1,49 @@
 import numpy as np
-from . import bvvmmm
+import bvvmmm
 import matplotlib.pyplot as plt
 import torch
 import sys
 import warnings
 
-def pick_elbow_component(ll, component_range, thresh = 0.01):
+def pick_elbow_chord(ll, component_range, abs_thresh=0.6):
+    x = np.asarray(component_range, dtype=float)
+    y = np.asarray(ll, dtype=float)
 
+    denom = y.max() - y.min()
+    if denom < abs_thresh:
+        return component_range[0]
+
+    # normalize to [0,1]
+    y = (y - y.min()) / denom
+    x = (x - x.min()) / (x.max() - x.min() + 1e-12)
+
+    # distance from line between endpoints
+    p0 = np.array([x[0], y[0]])
+    p1 = np.array([x[-1], y[-1]])
+    v = p1 - p0
+    vnorm = np.linalg.norm(v) + 1e-12
+
+    pts = np.column_stack([x, y])
+    # perpendicular distance = ||(pts-p0) x v|| / ||v||
+    # in 2D, cross product magnitude is scalar:
+    dist = np.abs((pts[:,0]-p0[0]) * v[1] - (pts[:,1]-p0[1]) * v[0]) / vnorm
+
+    elbow_index = int(np.argmax(dist))
+    return component_range[elbow_index]
+
+
+def pick_elbow_component(ll, component_range, grad_thresh = 0.1, abs_thresh = 0.6):
+
+    # compute denom and check it is bigger than abs_thresh
+    denom = np.amax(ll) - np.amin(ll)
+    if denom < abs_thresh:
+        # return smallest model
+        return component_range[0]
     #compute gradient of "normalized" log likelihood
-    grad = np.gradient(ll/(np.amax(ll) - np.amin(ll)))
+    grad = np.gradient(ll / denom)
     # Elbow is the point right before fraction of information gained goes below the threshold
-    if np.any(grad < thresh):
-        elbow_index = np.amin(np.argwhere(grad < thresh)) - 1
+    if np.any(grad < grad_thresh):
+        elbow_index = np.amin(np.argwhere(grad < grad_thresh)) - 1
     # else set to last index
     else:
         elbow_index = -1
@@ -105,7 +137,7 @@ class MultiIndSineBVvMMM:
         fontsize=12
         for residue in range(self.n_residues):
             self.ll_scan[:,residue], _, _, self.icl_scan[:,residue], self.cv_ll_scan[:,residue], best_models = bvvmmm.component_scan(data[:,residue,:], self.components_scan, n_attempts=n_attempts, tol=self.tol, device=self.device, dtype=self.dtype, train_frac=train_frac, verbose=False)
-            self.components[residue] = pick_elbow_component(self.ll_scan[:,residue], self.components_scan)
+            self.components[residue] = pick_elbow_chord(self.ll_scan[:,residue], self.components_scan)
             # plot!!!
             fig, axes = plt.subplots(1, 2, figsize=(10, 5)) # 1 rows, 2 columns
             # LL phi/psi 1
@@ -196,11 +228,45 @@ class MultiIndSineBVvMMM:
         # update flag
         self.fit_flag_ = True
 
-    def predict(self, data):
+    def predict_micro(self, data):
         """ predict cluster ids """
         # first check that the object has been fit
         if not self.fit_flag_:
-            print("You must fit the object before you can predit")
+            print("You must fit the object before you can predict")
+            sys.exit(1)
+        # check data is in radians
+        assert_radians(data)
+        # pass data to pyTorch
+        data = torch.tensor(data, device=self.device, dtype=self.dtype)
+        n_samples = data.shape[0]
+        # declare ln_pdf list
+        ln_pdf_list = []
+        for residue in range(self.n_residues):
+            # precompute diff_sin_prod
+            diff_phi = torch.sin(data[:, residue, 0].unsqueeze(1) - self.residue_models_[residue].means_[:,0].unsqueeze(0))
+            diff_psi = torch.sin(data[:, residue, 1].unsqueeze(1) - self.residue_models_[residue].means_[:,1].unsqueeze(0))
+            diff_sin_prod = diff_phi * diff_psi
+            # Vectorized log-PDF evaluation.
+            phi = data[:, residue, 0].unsqueeze(1).expand(n_samples, self.residue_models_[residue].n_components)
+            psi = data[:, residue, 1].unsqueeze(1).expand(n_samples, self.residue_models_[residue].n_components)
+            # compute ln pdf
+            ln_pdf = bvvmmm.batched_bvm_sine_ln_pdf(phi, psi, diff_sin_prod, self.residue_models_[residue].means_, self.residue_models_[residue].kappas_, self.residue_models_[residue].normalization_)
+            # add to list
+            ln_pdf_list.append(ln_pdf)
+        # compute micro state ids
+        micro_ids = np.empty((n_samples, self.n_residues), dtype=np.int64)
+        for residue in range(self.n_residues):
+            model = self.residue_models_[residue]
+            ln_post = ln_pdf_list[residue] + torch.log(model.weights_.unsqueeze(0))
+            micro_ids[:, residue] = ln_post.argmax(dim=1).cpu().numpy()
+
+        return micro_ids
+
+    def predict_macro(self, data):
+        """ predict cluster ids """
+        # first check that the object has been fit
+        if not self.fit_flag_:
+            print("You must fit the object before you can predict")
             sys.exit(1)
         # check data is in radians
         assert_radians(data)

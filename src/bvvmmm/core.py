@@ -115,7 +115,10 @@ class SineBVvMMM:
     >>> model.plot_scatter_clusters(data)
     """
 
-    def __init__(self, n_components=2, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
+    def __init__(self, n_components=2, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False,
+                 init_method: str = 'random', kpp_oversample: int = 5,
+                 small_lambda_rho_thresh: float = 0.30,
+                 auto_refine: bool = True):
         self.n_components = n_components
         self.max_iter = max_iter
         self.tol = tol
@@ -125,6 +128,11 @@ class SineBVvMMM:
             self.seed = seed
             torch.manual_seed(seed)
         self.verbose = verbose
+        # initialization / refinement controls
+        self.init_method = init_method.lower()
+        self.kpp_oversample = int(kpp_oversample)
+        self.small_lambda_rho_thresh = float(small_lambda_rho_thresh)
+        self.auto_refine = bool(auto_refine)
         self.weights_ = None
         self.kappas_ = None
         self.means_ = None
@@ -263,7 +271,83 @@ class SineBVvMMM:
                     kappas[1] * torch.cos(psi - means[1]) +
                     kappas[2] * torch.sin(phi - means[0]) * torch.sin(psi - means[1]))
         return exponent - torch.log(C)
-        
+
+    ## MM
+    @staticmethod
+    def _wrap_angle_delta(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Smallest signed angular difference a-b in [-pi, pi]."""
+        return torch.atan2(torch.sin(a - b), torch.cos(a - b))
+
+    def _torus_sqdist(self, x: torch.Tensor, centers: torch.Tensor) -> torch.Tensor:
+        """Squared distance on a 2-torus between points x (N,2) and centers (K,2)."""
+        # (N,K,2)
+        dx0 = self._wrap_angle_delta(x[:, 0].unsqueeze(1), centers[:, 0].unsqueeze(0))
+        dx1 = self._wrap_angle_delta(x[:, 1].unsqueeze(1), centers[:, 1].unsqueeze(0))
+        return dx0 * dx0 + dx1 * dx1
+
+    def _kmeanspp_init_means(self, data: torch.Tensor, n_components: int) -> torch.Tensor:
+        """
+        k-means++ style initialization on the torus (phi, psi angles in radians).
+
+        Picks the first center uniformly at random from samples, then samples subsequent
+        centers with probability proportional to the squared torus-distance to the nearest center.
+        """
+        n_samples = data.shape[0]
+        if n_components <= 0:
+            raise ValueError("n_components must be >= 1")
+        if n_components == 1:
+            # random sample as the single center
+            idx0 = torch.randint(0, n_samples, (1,), device=self.device)
+            return data[idx0].clone()
+
+        # choose first center at random
+        idx0 = torch.randint(0, n_samples, (1,), device=self.device)
+        centers = [data[idx0].squeeze(0)]
+
+        # running min distances to current centers
+        min_d2 = self._torus_sqdist(data, centers[0].unsqueeze(0)).squeeze(1)  # (N,)
+
+        # optional oversampling to reduce duplicate picks when data has repeats
+        oversample = max(1, self.kpp_oversample)
+
+        for _ in range(1, n_components):
+            # probabilities proportional to min_d2
+            probs = min_d2 / (min_d2.sum() + 1e-12)
+
+            # sample a few candidates and take the best (farthest) one
+            cand_idx = torch.multinomial(probs, num_samples=min(oversample, n_samples), replacement=False)
+            cand = data[cand_idx]  # (M,2)
+            # compute each candidate's distance to nearest existing center
+            d2_cand = self._torus_sqdist(cand, torch.stack(centers, dim=0)).min(dim=1).values
+            best = cand[d2_cand.argmax()]
+            centers.append(best)
+
+            # update min_d2
+            new_d2 = self._torus_sqdist(data, best.unsqueeze(0)).squeeze(1)
+            min_d2 = torch.minimum(min_d2, new_d2)
+
+        return torch.stack(centers, dim=0)
+
+    def _small_lambda_approx_ok(self, kappas: torch.Tensor) -> bool:
+        """
+        Heuristic validity check for the 'small lambda' approximation.
+
+        We check two things per component:
+          1) rho = |lambda| / sqrt(kappa1*kappa2) is small (dimensionless coupling)
+
+        Returns True if all components pass.
+        """
+        k1 = kappas[:, 0].clamp_min(1e-12)
+        k2 = kappas[:, 1].clamp_min(1e-12)
+        lam = kappas[:, 2]
+        rho = torch.abs(lam) / torch.sqrt(k1 * k2)
+
+        if torch.any(rho > self.small_lambda_rho_thresh):
+            return False
+        else: 
+            return True
+
+    ## MM
 
     def _nll_single_cluster_numpy(self, params, data, resp):
         """
@@ -550,7 +634,10 @@ class SineBVvMMM:
         cos_data = torch.cos(data)
         # initialize Model parameters
         self.weights_ = torch.full((self.n_components,), 1.0 / self.n_components, device=self.device, dtype=self.dtype)
-        self.means_ = torch.rand((self.n_components,2), device=self.device, dtype=self.dtype) * 2 * torch.pi - torch.pi
+        if self.init_method in ('kmeans++', 'kpp', 'kmeanspp', 'k-means++'):
+            self.means_ = self._kmeanspp_init_means(data, self.n_components)
+        else:
+            self.means_ = torch.rand((self.n_components,2), device=self.device, dtype=self.dtype) * 2 * torch.pi - torch.pi
         self.kappas_ = torch.column_stack( (torch.ones((self.n_components,2), device=self.device, dtype=self.dtype),torch.zeros(self.n_components, device=self.device, dtype=self.dtype)))
         self.normalization_ = self._second_order_normalization_constant(self.kappas_)
         # precompute diff_sin_prod
@@ -575,6 +662,16 @@ class SineBVvMMM:
         self.ll = ll
         # sort by cluster weights
         self.sort_clusters()
+        # Optional: if small-lambda approximation is not valid after MoM, refine numerically.
+        if self.auto_refine:
+            try:
+                if not self._small_lambda_approx_ok(self.kappas_):
+                    if self.verbose:
+                        print("Small-lambda approximation check failed; running numeric refinement (refine()).")
+                    self.refine(data.detach().cpu().numpy())
+            except Exception as e:
+                # Never fail the fit because of the diagnostic; just warn.
+                warnings.warn(f"Auto-refine check failed with error: {e}")
 
 
 
@@ -813,7 +910,7 @@ class SineBVvMMM:
     
     def plot_scatter_clusters(self, data, title=None):
         fontsize=12
-        clusters = self.predict(data)[0].cpu().numpy()
+        clusters = self.predict(data).cpu().numpy()
         plt.figure(figsize=(6, 6))
         plt.scatter(data[:, 0], data[:, 1], c=clusters, cmap='tab10', s=10)
         plt.xlabel(r'$\phi$ (radians)',fontsize=fontsize)

@@ -7,12 +7,15 @@ setup.cfg
 setup.py
 src/bvvmmm/__init__.py
 src/bvvmmm/core.py
+src/bvvmmm/sampler.py
 src/bvvmmm/utils.py
 src/bvvmmm.egg-info/PKG-INFO
 src/bvvmmm.egg-info/SOURCES.txt
 src/bvvmmm.egg-info/dependency_links.txt
 src/bvvmmm.egg-info/requires.txt
 src/bvvmmm.egg-info/top_level.txt
+src/multi/__init__.py
+src/multi/core.py
 src/vmmm/__init__.py
 src/vmmm/core.py
 src/vmmm/utils.py
