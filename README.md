@@ -127,20 +127,6 @@ This prints the per-component ratio \\(\rho = |\lambda|/\sqrt{\kappa_1\kappa_2}\
 
 ---
 
-### 🔁 Recommended model-selection utilities
-
-For robust fitting and component-count selection, prefer the helper utilities in `bvvmmm.utils`:
-
-```python
-# Run multiple random initializations and keep the best LL model
-best_model = fit_with_attempts(data, n_components=3, n_attempts=10, verbose=True)
-
-# Scan candidate component counts and compare AIC/BIC/ICL
-results = component_scan(data, components=[1, 2, 3, 4], n_attempts=10, verbose=True)
-```
-
----
-
 ## 🧬 Applications
 
 * Protein backbone conformational clustering (Ramachandran analysis)
