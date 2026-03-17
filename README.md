@@ -80,10 +80,13 @@ Initialize the mixture model.
 | Parameter      | Description                                   |
 | -------------- | --------------------------------------------- |
 | `n_components` | Number of clusters                            |
-| `small_lambda` | Use small lambda approximation (default True) |
 | `max_iter`     | Maximum EM iterations                         |
 | `tol`          | Convergence threshold for log-likelihood      |
 | `device`       | 'cuda' or 'cpu'                               |
+| `init_method`  | `random` or `kmeans++` mean initialization    |
+| `auto_refine`  | Run numeric `refine()` when coupling is large |
+| `small_lambda_rho_thresh` | Threshold for \\(\rho = |\lambda|/\sqrt{\kappa_1\kappa_2}\\) |
+| `debug_refine_ratios` | Print per-component \\(\rho\\) values during `fit()` |
 | `verbose`      | Print progress during fitting                 |
 
 ---
@@ -100,6 +103,22 @@ Initialize the mixture model.
 | `bic(data)`                   | Bayesian Information Criterion                         |
 | `icl(data)`                   | Integrated Complete Likelihood                         |
 | `plot_scatter_clusters(data)` | Visualize 2D clusters                                  |
+
+### 🐞 Refinement troubleshooting
+
+If numeric refinement is triggered unexpectedly often, enable ratio logging:
+
+```python
+model = SineBVvMMM(
+    n_components=3,
+    auto_refine=True,
+    small_lambda_rho_thresh=0.30,
+    debug_refine_ratios=True,
+)
+model.fit(data)
+```
+
+This prints the per-component ratio \\(\rho = |\lambda|/\sqrt{\kappa_1\kappa_2}\\). Refinement runs only when any component exceeds `small_lambda_rho_thresh`.
 
 ---
 
@@ -118,7 +137,7 @@ Initialize the mixture model.
 To run the unit tests:
 
 ```bash
-pytest tests/
+PYTHONPATH=src pytest -q
 ```
 
 ---
@@ -140,4 +159,3 @@ Contributions are welcome! Please open an issue or pull request if you'd like to
 ## 📄 License
 
 This project is licensed under the MIT License. See [`LICENSE`](LICENSE) for details.
-
