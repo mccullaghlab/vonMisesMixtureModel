@@ -118,7 +118,7 @@ class SineBVvMMM:
     def __init__(self, n_components=2, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False,
                  init_method: str = 'random', kpp_oversample: int = 5,
                  small_lambda_rho_thresh: float = 0.30,
-                 auto_refine: bool = True,
+                 auto_refine: bool = False,
                  debug_refine_ratios: bool = False):
         self.n_components = n_components
         self.max_iter = max_iter
