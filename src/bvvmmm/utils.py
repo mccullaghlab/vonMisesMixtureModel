@@ -5,7 +5,7 @@ import sys
 import warnings
 from .core import SineBVvMMM
 
-def fit_with_attempts(data, n_components, n_attempts, verbose=True, max_iter=200, tol=1e-5, device=None, dtype=torch.float64, init_method = "kmeans++", kpp_oversample = 5, small_lambda_rho_thresh = 0.3, auto_refine = True):
+def fit_with_attempts(data, n_components, n_attempts, verbose=True, max_iter=200, tol=1e-5, device=None, dtype=torch.float64, init_method = "kmeans++", kpp_oversample = 5, small_lambda_rho_thresh = 0.3, auto_refine = False):
     """
     Repeatedly fit a SineBVvMMM model to data with multiple random initializations,
     and return the model with the highest log-likelihood.
@@ -54,7 +54,7 @@ def fit_with_attempts(data, n_components, n_attempts, verbose=True, max_iter=200
     return models[np.nanargmax(ll)]
 
 
-def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, verbose=True, plot=False, device=None, dtype=torch.float64,  init_method = "kmeans++", kpp_oversample = 5, small_lambda_rho_thresh = 0.3, auto_refine = True):
+def component_scan(data, components, n_attempts=15, tol=1e-4, train_frac=1.0, verbose=True, plot=False, device=None, dtype=torch.float64,  init_method = "kmeans++", kpp_oversample = 5, small_lambda_rho_thresh = 0.3, auto_refine = False):
     """
     Scan through different numbers of components by fitting multiple attempts
     of the SineVMEM model and returning metrics including training log likelihood,
