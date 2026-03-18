@@ -118,7 +118,8 @@ class SineBVvMMM:
     def __init__(self, n_components=2, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False,
                  init_method: str = 'random', kpp_oversample: int = 5,
                  small_lambda_rho_thresh: float = 0.30,
-                 auto_refine: bool = True):
+                 auto_refine: bool = True,
+                 debug_refine_ratios: bool = False):
         self.n_components = n_components
         self.max_iter = max_iter
         self.tol = tol
@@ -133,6 +134,7 @@ class SineBVvMMM:
         self.kpp_oversample = int(kpp_oversample)
         self.small_lambda_rho_thresh = float(small_lambda_rho_thresh)
         self.auto_refine = bool(auto_refine)
+        self.debug_refine_ratios = bool(debug_refine_ratios)
         self.weights_ = None
         self.kappas_ = None
         self.means_ = None
@@ -328,6 +330,15 @@ class SineBVvMMM:
 
         return torch.stack(centers, dim=0)
 
+    def _small_lambda_rho(self, kappas: torch.Tensor) -> torch.Tensor:
+        """
+        Compute per-component coupling ratio rho = |lambda| / sqrt(kappa1*kappa2).
+        """
+        k1 = kappas[:, 0].clamp_min(1e-12)
+        k2 = kappas[:, 1].clamp_min(1e-12)
+        lam = kappas[:, 2]
+        return torch.abs(lam) / torch.sqrt(k1 * k2)
+
     def _small_lambda_approx_ok(self, kappas: torch.Tensor) -> bool:
         """
         Heuristic validity check for the 'small lambda' approximation.
@@ -337,10 +348,7 @@ class SineBVvMMM:
 
         Returns True if all components pass.
         """
-        k1 = kappas[:, 0].clamp_min(1e-12)
-        k2 = kappas[:, 1].clamp_min(1e-12)
-        lam = kappas[:, 2]
-        rho = torch.abs(lam) / torch.sqrt(k1 * k2)
+        rho = self._small_lambda_rho(kappas)
 
         if torch.any(rho > self.small_lambda_rho_thresh):
             return False
@@ -577,10 +585,13 @@ class SineBVvMMM:
         means = torch.empty((self.n_components,2),dtype=self.dtype, device=self.device)
         kappas = torch.empty((self.n_components,3),dtype=self.dtype, device=self.device)
     
+        data_np = data.cpu().numpy()
+        norm_resp_np = norm_resp.cpu().numpy()
+
         # loop over components and compute optimal parameters using numeric minimization of LL
         for k in range(self.n_components):
             # Optimize with scipy
-            optimized_params = self._optimize_cluster_scipy(data.cpu().numpy(), norm_resp[:, k].cpu().numpy(), initial_guess[k])
+            optimized_params = self._optimize_cluster_scipy(data_np, norm_resp_np[:, k], initial_guess[k])
             # Assign back
             means[k, 0], means[k, 1] = optimized_params[0], optimized_params[1]
             kappas[k, 0], kappas[k, 1], kappas[k, 2] = optimized_params[2], optimized_params[3], optimized_params[4]
@@ -665,7 +676,15 @@ class SineBVvMMM:
         # Optional: if small-lambda approximation is not valid after MoM, refine numerically.
         if self.auto_refine:
             try:
-                if not self._small_lambda_approx_ok(self.kappas_):
+                rho = self._small_lambda_rho(self.kappas_)
+                if self.debug_refine_ratios:
+                    print(
+                        "Small-lambda rho ratios:",
+                        rho.detach().cpu().numpy(),
+                        f"(threshold={self.small_lambda_rho_thresh})"
+                    )
+
+                if torch.any(rho > self.small_lambda_rho_thresh):
                     if self.verbose:
                         print("Small-lambda approximation check failed; running numeric refinement (refine()).")
                     self.refine(data.detach().cpu().numpy())

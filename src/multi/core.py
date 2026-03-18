@@ -109,7 +109,10 @@ class MultiIndSineBVvMMM:
     >>> model.plot_clusters(data)
     """
 
-    def __init__(self, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False):
+    def __init__(self, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False,
+                 init_method: str = 'random', kpp_oversample: int = 5,
+                 small_lambda_rho_thresh: float = 0.30,
+                 auto_refine: bool = True):
         self.max_iter = max_iter
         self.tol = tol
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
@@ -118,6 +121,11 @@ class MultiIndSineBVvMMM:
             self.seed = seed
             torch.manual_seed(seed)
         self.verbose = verbose
+        # initialization / refinement controls
+        self.init_method = init_method.lower()
+        self.kpp_oversample = int(kpp_oversample)
+        self.small_lambda_rho_thresh = float(small_lambda_rho_thresh)
+        self.auto_refine = bool(auto_refine)
         self.scan_flag_ = False
         self.fit_flag_ = False
         self.weights_ = None
@@ -136,7 +144,7 @@ class MultiIndSineBVvMMM:
         # plot parameters
         fontsize=12
         for residue in range(self.n_residues):
-            self.ll_scan[:,residue], _, _, self.icl_scan[:,residue], self.cv_ll_scan[:,residue], best_models = bvvmmm.component_scan(data[:,residue,:], self.components_scan, n_attempts=n_attempts, tol=self.tol, device=self.device, dtype=self.dtype, train_frac=train_frac, verbose=False)
+            self.ll_scan[:,residue], _, _, self.icl_scan[:,residue], self.cv_ll_scan[:,residue], best_models = bvvmmm.component_scan(data[:,residue,:], self.components_scan, n_attempts=n_attempts, tol=self.tol, device=self.device, dtype=self.dtype, train_frac=train_frac, verbose=False, init_method = self.init_method, kpp_oversample = self.kpp_oversample, small_lambda_rho_thresh = self.small_lambda_rho_thresh, auto_refine = self.auto_refine)
             self.components[residue] = pick_elbow_chord(self.ll_scan[:,residue], self.components_scan)
             # plot!!!
             fig, axes = plt.subplots(1, 2, figsize=(10, 5)) # 1 rows, 2 columns
@@ -182,7 +190,7 @@ class MultiIndSineBVvMMM:
         for residue in range(self.n_residues):
             if verbose==True:
                 print("Fitting Residue ", residue+1, " with ", self.components[residue], " components")
-            model = bvvmmm.fit_with_attempts(data[:,residue,:],self.components[residue],n_attempts, verbose=verbose, device=self.device, dtype=self.dtype)
+            model = bvvmmm.fit_with_attempts(data[:,residue,:],self.components[residue],n_attempts, verbose=verbose, device=self.device, dtype=self.dtype, init_method = self.init_method, kpp_oversample = self.kpp_oversample, small_lambda_rho_thresh = self.small_lambda_rho_thresh, auto_refine = self.auto_refine)
             self.cluster_ids[:,residue] = model.predict(data[:,residue,:])[0]
             self.residue_models_.append(model)
 
