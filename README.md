@@ -47,6 +47,7 @@ pip install .
 
 ```python
 from bvvmmm.core import SineBVvMMM
+from bvvmmm.utils import fit_with_attempts, component_scan
 import numpy as np
 
 # Example: Generate synthetic (phi, psi) data
@@ -59,8 +60,11 @@ model = SineBVvMMM(n_components=3, max_iter=100, tol=1e-5, verbose=True)
 # Fit the model
 model.fit(data)
 
-# Predict cluster assignments
-clusters, log_likelihood = model.predict(data)
+# Predict cluster assignments (labels only)
+clusters = model.predict(data)
+
+# Score model (average log-likelihood per frame)
+ll_per_frame = model.score(data)
 
 # Evaluate log-probabilities
 log_probs = model.ln_pdf(data)
@@ -96,7 +100,8 @@ Initialize the mixture model.
 | Method                        | Description                                            |
 | ----------------------------- | ------------------------------------------------------ |
 | `fit(data)`                   | Fit model to angular data of shape `(N, 2)`            |
-| `predict(data)`               | Predict cluster assignments and compute log-likelihood |
+| `score(data)`                 | Return average log-likelihood per frame                |
+| `predict(data)`               | Predict cluster assignments (cluster IDs only)         |
 | `ln_pdf(data)`                | Log-density under the fitted model                     |
 | `pdf(data)`                   | Probability density under the fitted model             |
 | `aic(data)`                   | Akaike Information Criterion                           |
