@@ -112,7 +112,7 @@ class MultiIndSineBVvMMM:
     def __init__(self, max_iter=100, tol=1e-4, device=None, dtype=torch.float64, seed=None, verbose=False,
                  init_method: str = 'random', kpp_oversample: int = 5,
                  small_lambda_rho_thresh: float = 0.30,
-                 auto_refine: bool = True):
+                 auto_refine: bool = False):
         self.max_iter = max_iter
         self.tol = tol
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
