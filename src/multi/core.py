@@ -236,6 +236,20 @@ class MultiIndSineBVvMMM:
         # update flag
         self.fit_flag_ = True
 
+    def refine(self, data, verbose=True):
+        """ refine fit BVvMMM to each residue with provided data using numeric EM optimization """
+        # first check that the object has been fit
+        if not self.fit_flag_:
+            print("You must fit the object before you can predict")
+            sys.exit(1)
+
+        # Refine each residue model using residue specific data
+        for residue in range(self.n_residues):
+            if verbose==True:
+                print("Refining Residue ", residue+1, " with ", self.components[residue], " components")
+            self.residue_models_.refine(data[:,residue,:])
+            self.cluster_ids[:,residue] = model.predict(data[:,residue,:])
+
     def predict_micro(self, data):
         """ predict cluster ids """
         # first check that the object has been fit
@@ -302,6 +316,68 @@ class MultiIndSineBVvMMM:
                 macro_ln_pdf[:,state] += ln_pdf_list[residue][:,self.macro_state_ids[state,residue]]
         # return cluster ids
         return macro_ln_pdf.argmax(dim=1).cpu().numpy()
+
+    def generate_independent(self, n_samples=10000):
+        """
+        Generate phi/psi samples assuming independence across residues.
+        
+        Parameters
+        ----------
+        n_samples : int
+            Number of samples to generate.
+        
+        Returns
+        -------
+        samples : numpy.ndarray of shape (n_samples, n_residues, 2)
+        """
+        
+        samples = np.empty((n_samples, self.n_residues, 2), dtype=float)
+        
+        for residue in range(self.n_residues):
+            residue_samples, _ = self.residue_models_[residue].generate(n_samples)
+            samples[:, residue, :] = residue_samples
+        
+        return samples
+
+    def generate_from_micro_states(self, micro_states):
+        """
+        Generate phi/psi samples for each residue from provided microstate assignments.
+        
+        Parameters
+        ----------
+        micro_states : array-like of shape (n_samples, n_residues)
+            Integer microstate/component IDs for each residue in each sample.
+        
+        Returns
+        -------
+        samples : numpy.ndarray of shape (n_samples, n_residues, 2)
+            Generated phi/psi samples for each residue.
+        """
+        micro_states = np.asarray(micro_states, dtype=int)
+        
+        if micro_states.ndim != 2:
+            raise ValueError(
+                f"micro_states must be a 2D array of shape (n_samples, n_residues), "
+                f"got shape {micro_states.shape}."
+            )
+        
+        n_samples, n_residues = micro_states.shape
+        
+        if n_residues != self.n_residues:
+            raise ValueError(
+                f"micro_states has {n_residues} residues, but model expects "
+                f"{self.n_residues}."
+            )
+        
+        samples = np.empty((n_samples, self.n_residues, 2), dtype=float)
+        
+        for residue in range(self.n_residues):
+            samples[:, residue, :] = self.residue_models_[residue].generate_from_cluster_ids(
+                micro_states[:, residue]
+            )
+        
+        return samples
+
 
     def plot_marginal_fes(self, data):
         """ make plots of marginal fes for each residue """

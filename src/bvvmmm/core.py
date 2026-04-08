@@ -7,6 +7,7 @@ from scipy.special import iv, comb
 from scipy.optimize import minimize
 import sys
 import warnings
+from .sampler import gibbs_sine_bvm
 
 
 def assert_radians(data, lower_bound=-np.pi, upper_bound=np.pi):
@@ -835,6 +836,89 @@ class SineBVvMMM:
         data = torch.tensor(data, device=self.device, dtype=self.dtype)
         responsibilities, ll = self._e_step(data)
         return ll
+
+    def generate(self, n_samples=10000):
+        """
+        Function to generate samples from distribution
+
+        Returns
+        -------
+        samples : numpy array
+        component_ids : numpy array
+        """
+
+        # declare numpy array of samples
+        samples = np.empty((n_samples,2),dtype=float)
+        
+        # create cluster ids from multinomial
+        component_ids = torch.multinomial(self.weights_, n_samples, replacement=True).cpu().numpy()
+
+        # sample per component
+        for component in range(self.n_components):
+            mask = (component_ids == component)
+            n_component_samples = mask.sum()
+            # check to make sure there are finite samples for this component
+            if n_component_samples == 0:
+                continue
+            samples[mask] = gibbs_sine_bvm(n_component_samples, self.means_[component,0], self.means_[component,1], self.kappas_[component,0], self.kappas_[component,1], self.kappas_[component,2])
+
+        # return
+        return samples, component_ids
+
+    def generate_from_component_ids(self, component_ids):
+        """
+        Generate samples from the mixture model using user-supplied component IDs.
+        
+        Parameters
+        ----------
+        component_ids : array-like of shape (n_samples,)
+            Integer component labels in the range [0, self.n_components - 1].
+        
+        Returns
+        -------
+        samples : numpy.ndarray of shape (n_samples, 2)
+            Generated samples corresponding to the supplied component IDs.
+        """
+        
+        # Convert to a 1D integer numpy array
+        component_ids = np.asarray(component_ids, dtype=int).ravel()
+        
+        # Handle empty input
+        if component_ids.size == 0:
+            return np.empty((0, 2), dtype=float)
+        
+        # Validate component IDs
+        if np.any(component_ids < 0):
+            raise ValueError("component_ids contains negative values.")
+        
+        max_component_id = component_ids.max()
+        if max_component_id >= self.n_components:
+            raise ValueError(
+                f"component_ids contains value {max_component_id}, "
+                f"but valid IDs are in [0, {self.n_components - 1}]."
+            )
+        
+        n_samples = component_ids.shape[0]
+        samples = np.empty((n_samples, 2), dtype=float)
+        
+        # Generate samples component-by-component
+        for component in range(self.n_components):
+            mask = (component_ids == component)
+            n_component_samples = mask.sum()
+        
+            if n_component_samples == 0:
+                continue
+        
+            samples[mask] = gibbs_sine_bvm(
+                n_component_samples,
+                self.means_[component, 0],
+                self.means_[component, 1],
+                self.kappas_[component, 0],
+                self.kappas_[component, 1],
+                self.kappas_[component, 2],
+            )
+        
+        return samples
 
     def sort_clusters(self):
         """
