@@ -248,7 +248,7 @@ class MultiIndSineBVvMMM:
             if verbose==True:
                 print("Refining Residue ", residue+1, " with ", self.components[residue], " components")
             self.residue_models_[residue].refine(data[:,residue,:])
-            self.cluster_ids[:,residue] = model.predict(data[:,residue,:])
+            self.cluster_ids[:,residue] = self.residue_models_[residue].predict(data[:,residue,:])
 
     def predict_micro(self, data):
         """ predict cluster ids """
