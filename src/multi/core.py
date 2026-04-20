@@ -247,7 +247,7 @@ class MultiIndSineBVvMMM:
         for residue in range(self.n_residues):
             if verbose==True:
                 print("Refining Residue ", residue+1, " with ", self.components[residue], " components")
-            self.residue_models_.refine(data[:,residue,:])
+            self.residue_models_[residue].refine(data[:,residue,:])
             self.cluster_ids[:,residue] = model.predict(data[:,residue,:])
 
     def predict_micro(self, data):
@@ -372,7 +372,7 @@ class MultiIndSineBVvMMM:
         samples = np.empty((n_samples, self.n_residues, 2), dtype=float)
         
         for residue in range(self.n_residues):
-            samples[:, residue, :] = self.residue_models_[residue].generate_from_cluster_ids(
+            samples[:, residue, :] = self.residue_models_[residue].generate_from_component_ids(
                 micro_states[:, residue]
             )
         
