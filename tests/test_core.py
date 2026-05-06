@@ -54,7 +54,29 @@ def test_score_shapes():
     assert isinstance(ll, torch.Tensor), "Log-likelihood is not a torch tensor."
     assert ll.dim() == 0, "Log-likelihood should be a scalar."
 
+def test_refine_macro3_res12_stays_finite():
+    data = np.load("tests/data/repro_macro3_res12_phi_psi.npy")
+    np.random.seed(12)
+    torch.manual_seed(12)
+    model = SineBVvMMM(
+        n_components=3,
+        max_iter=3,
+        tol=1e-5,
+        auto_refine=False,
+        verbose=False,
+    )
+    model.fit(data)
+    assert torch.isfinite(model.weights_).all()
+    assert torch.isfinite(model.means_).all()
+    assert torch.isfinite(model.kappas_).all()
+    assert torch.isfinite(model.ll)
+
+    model.refine(data)
+    assert torch.isfinite(model.weights_).all()
+    assert torch.isfinite(model.means_).all()
+    assert torch.isfinite(model.kappas_).all()
+    assert torch.isfinite(model.ll)
+
 
 if __name__ == "__main__":
     pytest.main(["-v", "tests/test_core.py"])
-

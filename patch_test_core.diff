@@ -1,0 +1,58 @@
+diff --git a/tests/test_core.py b/tests/test_core.py
+index 642dd9e5f074a6f155c383a27e9821ca4d104d65..cd58f72d85ea4dae7c676c3980f27c8e4a63e861 100644
+--- a/tests/test_core.py
++++ b/tests/test_core.py
+@@ -32,29 +32,51 @@ def test_sine_bvvmmm_basic_fit():
+     assert model.kappas_ is not None, "Model kappas not set."
+ 
+     # Check if the weights sum to 1
+     np.testing.assert_allclose(torch.sum(model.weights_).cpu().numpy(), 1.0, rtol=1e-3)
+ 
+ def test_predict_shapes():
+     data = generate_synthetic_data(n_samples=100, n_components=2)
+ 
+     model = SineBVvMMM(n_components=2, max_iter=50, tol=1e-4, verbose=False)
+     model.fit(data)
+ 
+     labels = model.predict(data)
+     assert labels.shape[0] == data.shape[0], "Number of labels does not match number of samples."
+ 
+ 
+ def test_score_shapes():
+     data = generate_synthetic_data(n_samples=100, n_components=2)
+ 
+     model = SineBVvMMM(n_components=2, max_iter=50, tol=1e-4, verbose=False)
+     model.fit(data)
+ 
+     ll = model.score(data)
+     assert isinstance(ll, torch.Tensor), "Log-likelihood is not a torch tensor."
+     assert ll.dim() == 0, "Log-likelihood should be a scalar."
+ 
++def test_refine_macro3_res12_stays_finite():
++    data = np.load("tests/data/repro_macro3_res12_phi_psi.npy")
++    np.random.seed(12)
++    torch.manual_seed(12)
++    model = SineBVvMMM(
++        n_components=3,
++        max_iter=3,
++        tol=1e-5,
++        auto_refine=False,
++        verbose=False,
++    )
++    model.fit(data)
++    assert torch.isfinite(model.weights_).all()
++    assert torch.isfinite(model.means_).all()
++    assert torch.isfinite(model.kappas_).all()
++    assert torch.isfinite(model.ll)
++
++    model.refine(data)
++    assert torch.isfinite(model.weights_).all()
++    assert torch.isfinite(model.means_).all()
++    assert torch.isfinite(model.kappas_).all()
++    assert torch.isfinite(model.ll)
++
+ 
+ if __name__ == "__main__":
+     pytest.main(["-v", "tests/test_core.py"])
+-
+

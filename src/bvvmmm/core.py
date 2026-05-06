@@ -423,7 +423,19 @@ class SineBVvMMM:
 
         # Initial guess with log transform for kappas
         mu1_init, mu2_init, kappa1_init, kappa2_init, lambda_init = initial_guess
-        x0 = np.array([mu1_init, mu2_init, np.log(kappa1_init + 1e-6), np.log(kappa2_init + 1e-6), np.arctanh(lambda_init/np.sqrt(kappa1_init*kappa2_init))])
+        kappa1_init = max(float(kappa1_init), 1e-8)
+        kappa2_init = max(float(kappa2_init), 1e-8)
+        rho_init = float(lambda_init) / np.sqrt(kappa1_init * kappa2_init)
+        # Ensure a finite unconstrained parameterization for eta = arctanh(rho).
+        # rho must lie strictly inside (-1, 1) for unimodal sine BvM.
+        rho_init = np.clip(rho_init, -1.0 + 1e-8, 1.0 - 1e-8)
+        x0 = np.array([
+            mu1_init,
+            mu2_init,
+            np.log(kappa1_init),
+            np.log(kappa2_init),
+            np.arctanh(rho_init),
+        ])
 
         # Bounds:
         bounds = [
@@ -449,6 +461,20 @@ class SineBVvMMM:
         kappa2_opt = np.exp(log_kappa2_opt)
         lambda_opt = np.sqrt(kappa1_opt*kappa2_opt)*np.tanh(eta_opt)
         return torch.tensor([mu1_opt, mu2_opt, kappa1_opt, kappa2_opt, lambda_opt],dtype=self.dtype, device=self.device)
+
+    def _first_non_finite_in_refine_state(self, weights, means, kappas, normalization, ll=None):
+        checks = {
+            "weights": weights,
+            "means": means,
+            "kappas": kappas,
+            "normalization": normalization,
+        }
+        if ll is not None:
+            checks["log_likelihood"] = ll
+        for name, tensor in checks.items():
+            if not torch.isfinite(tensor).all():
+                return name
+        return None
 
         
     def _e_step(self, data, diff_sin_prod=None):
@@ -746,6 +772,13 @@ class SineBVvMMM:
         # e step
         responsibilities, old_ll = self._e_step(data, diff_sin_prod)
         with torch.no_grad():  # Disable gradients
+            previous_finite = (
+                self.weights_.clone(),
+                self.means_.clone(),
+                self.kappas_.clone(),
+                self.normalization_.clone(),
+                old_ll.clone(),
+            )
             # refine with numeric minimization 
             for _ in range(self.max_iter):
                 # Create initial guess array
@@ -755,6 +788,23 @@ class SineBVvMMM:
                 self.weights_, self.means_, self.kappas_, self.normalization_, diff_sin_prod  = self._m_step_numeric(data, responsibilities, initial_guess)
                 # e step
                 responsibilities, ll = self._e_step(data, diff_sin_prod)
+                first_non_finite = self._first_non_finite_in_refine_state(
+                    self.weights_, self.means_, self.kappas_, self.normalization_, ll
+                )
+                if first_non_finite is not None:
+                    warnings.warn(
+                        f"Numeric refinement produced non-finite values in '{first_non_finite}' at iteration {_}; "
+                        "falling back to previous finite parameters."
+                    )
+                    self.weights_, self.means_, self.kappas_, self.normalization_, ll = previous_finite
+                    break
+                previous_finite = (
+                    self.weights_.clone(),
+                    self.means_.clone(),
+                    self.kappas_.clone(),
+                    self.normalization_.clone(),
+                    ll.clone(),
+                )
                 if self.verbose:
                     print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
             

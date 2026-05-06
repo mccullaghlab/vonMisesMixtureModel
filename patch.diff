@@ -1,0 +1,194 @@
+diff --git a/src/bvvmmm/core.py b/src/bvvmmm/core.py
+index 02cb697b8d81f15871b273749b75b5b69c205d60..0cc9313b094f0334e00b2c1822b8faef7e332cdf 100644
+--- a/src/bvvmmm/core.py
++++ b/src/bvvmmm/core.py
+@@ -401,77 +401,103 @@ class SineBVvMMM:
+         nll = -np.sum(resp * log_pdf)
+ 
+         return nll
+ 
+     def _optimize_cluster_scipy(self, data, resp, initial_guess, max_iter=100):
+         """
+         Minimize NLL for a single cluster using SciPy minimize.
+ 
+         Parameters
+         ----------
+         data : ndarray, shape (n_samples, 2)
+             Input data (phi, psi).
+         resp : ndarray, shape (n_samples,)
+             Responsibilities for the cluster.
+         initial_guess : list or array
+             [mu1, mu2, kappa1, kappa2, lambda] starting values.
+ 
+         Returns
+         -------
+         optimized_params : ndarray
+             Optimized [mu1, mu2, kappa1, kappa2, lambda].
+         """
+ 
+         # Initial guess with log transform for kappas
+         mu1_init, mu2_init, kappa1_init, kappa2_init, lambda_init = initial_guess
+-        x0 = np.array([mu1_init, mu2_init, np.log(kappa1_init + 1e-6), np.log(kappa2_init + 1e-6), np.arctanh(lambda_init/np.sqrt(kappa1_init*kappa2_init))])
++        kappa1_init = max(float(kappa1_init), 1e-8)
++        kappa2_init = max(float(kappa2_init), 1e-8)
++        rho_init = float(lambda_init) / np.sqrt(kappa1_init * kappa2_init)
++        # Ensure a finite unconstrained parameterization for eta = arctanh(rho).
++        # rho must lie strictly inside (-1, 1) for unimodal sine BvM.
++        rho_init = np.clip(rho_init, -1.0 + 1e-8, 1.0 - 1e-8)
++        x0 = np.array([
++            mu1_init,
++            mu2_init,
++            np.log(kappa1_init),
++            np.log(kappa2_init),
++            np.arctanh(rho_init),
++        ])
+ 
+         # Bounds:
+         bounds = [
+             (-np.pi, np.pi),     # mu1
+             (-np.pi, np.pi),     # mu2
+             (None, None),        # log(kappa1) - unbounded
+             (None, None),        # log(kappa2) - unbounded
+             (None, None)         # eta - unbounded
+         ]
+ 
+         result = minimize(
+             self._nll_single_cluster_numpy,
+             x0,
+             args=(data, resp),
+             method='L-BFGS-B',
+             bounds=bounds,
+             options={'maxiter': max_iter}
+         )
+ 
+         # Extract optimized parameters
+         mu1_opt, mu2_opt, log_kappa1_opt, log_kappa2_opt, eta_opt = result.x
+         kappa1_opt = np.exp(log_kappa1_opt)
+         kappa2_opt = np.exp(log_kappa2_opt)
+         lambda_opt = np.sqrt(kappa1_opt*kappa2_opt)*np.tanh(eta_opt)
+         return torch.tensor([mu1_opt, mu2_opt, kappa1_opt, kappa2_opt, lambda_opt],dtype=self.dtype, device=self.device)
+ 
++    def _first_non_finite_in_refine_state(self, weights, means, kappas, normalization, ll=None):
++        checks = {
++            "weights": weights,
++            "means": means,
++            "kappas": kappas,
++            "normalization": normalization,
++        }
++        if ll is not None:
++            checks["log_likelihood"] = ll
++        for name, tensor in checks.items():
++            if not torch.isfinite(tensor).all():
++                return name
++        return None
++
+         
+     def _e_step(self, data, diff_sin_prod=None):
+         """
+         Vectorized E-step that computes the log responsibilities and overall log-likelihood.
+         Uses the TorchScript-compiled batched_bvm_sine_ln_pdf.
+         """
+         if diff_sin_prod is None:
+             # compute diff_sin_prod
+             diff_phi = torch.sin(data[:, 0].unsqueeze(1) - self.means_[:,0].unsqueeze(0))
+             diff_psi = torch.sin(data[:, 1].unsqueeze(1) - self.means_[:,1].unsqueeze(0))
+             diff_sin_prod = diff_phi * diff_psi
+         n_samples = data.size(0)
+         # data is shape (n_samples, 2)
+         # Expand phi and psi to shape (n_samples, n_components)
+         phi = data[:, 0].unsqueeze(1).expand(n_samples, self.n_components)
+         psi = data[:, 1].unsqueeze(1).expand(n_samples, self.n_components)
+         # Compute log PDF for each sample and component in one vectorized call.
+         log_pdf = batched_bvm_sine_ln_pdf(phi, psi, diff_sin_prod, self.means_, self.kappas_, self.normalization_)
+         # Add the log mixture weights.
+         log_weights = torch.log(self.weights_).unsqueeze(0)  # shape (1, n_components)
+         log_responsibilities = log_weights + log_pdf  # shape (n_samples, n_components)
+         # Compute normalization over components.
+         log_norm = torch.logsumexp(log_responsibilities, dim=1, keepdim=True)
+         ll = torch.mean(log_norm)
+         responsibilities = torch.exp(log_responsibilities - log_norm)
+@@ -724,59 +750,83 @@ class SineBVvMMM:
+         A `UserWarning` is issued if the EM algorithm does not converge within `max_iter` iterations.
+ 
+         See Also
+         --------
+         fit : fit with analytic moments
+         predict : Predict the most likely cluster labels for new data.
+         ln_pdf : Compute the log-probability density function (log-pdf) for input data.
+         pdf : Compute the probability density function (pdf) for input data.
+         """
+ 
+         # check data is in radians
+         assert_radians(data)
+         # pass data to pyTorch
+         data = torch.tensor(data,device=self.device, dtype=self.dtype)
+         # Precompute sin and cos values
+         sin_data = torch.sin(data)
+         cos_data = torch.cos(data)
+         #  Model parameters are initialized by analytic fitting
+         # precompute diff_sin_prod
+         diff_phi = torch.sin(data[:, 0].unsqueeze(1) - self.means_[:,0].unsqueeze(0))
+         diff_psi = torch.sin(data[:, 1].unsqueeze(1) - self.means_[:,1].unsqueeze(0))
+         diff_sin_prod = diff_phi * diff_psi
+         # e step
+         responsibilities, old_ll = self._e_step(data, diff_sin_prod)
+         with torch.no_grad():  # Disable gradients
++            previous_finite = (
++                self.weights_.clone(),
++                self.means_.clone(),
++                self.kappas_.clone(),
++                self.normalization_.clone(),
++                old_ll.clone(),
++            )
+             # refine with numeric minimization 
+             for _ in range(self.max_iter):
+                 # Create initial guess array
+                 initial_guess_tensor = torch.cat([self.means_, self.kappas_], dim=1)  # shape (n_components, 5)
+                 initial_guess = initial_guess_tensor.cpu().numpy()
+                 # perform numerical M step
+                 self.weights_, self.means_, self.kappas_, self.normalization_, diff_sin_prod  = self._m_step_numeric(data, responsibilities, initial_guess)
+                 # e step
+                 responsibilities, ll = self._e_step(data, diff_sin_prod)
++                first_non_finite = self._first_non_finite_in_refine_state(
++                    self.weights_, self.means_, self.kappas_, self.normalization_, ll
++                )
++                if first_non_finite is not None:
++                    warnings.warn(
++                        f"Numeric refinement produced non-finite values in '{first_non_finite}' at iteration {_}; "
++                        "falling back to previous finite parameters."
++                    )
++                    self.weights_, self.means_, self.kappas_, self.normalization_, ll = previous_finite
++                    break
++                previous_finite = (
++                    self.weights_.clone(),
++                    self.means_.clone(),
++                    self.kappas_.clone(),
++                    self.normalization_.clone(),
++                    ll.clone(),
++                )
+                 if self.verbose:
+                     print(_, ll.cpu().numpy(), self.weights_.cpu().numpy())
+             
+                 if torch.abs(ll - old_ll) < self.tol:
+                     break
+                 old_ll = ll
+                     
+         self.ll = ll
+         # sort by cluster weights
+         self.sort_clusters()
+ 
+     def predict(self, data):
+         """
+         Assign the most likely cluster to each sample in the input data.
+ 
+         This method computes the posterior responsibilities for each data point and 
+         returns the cluster with the highest responsibility (i.e., maximum a posteriori estimate).
+ 
+         Parameters
+         ----------
+         data : ndarray, shape (n_samples, 2)
+             Input data matrix where each row is a (phi, psi) dihedral angle pair in radians.
+             Values must be within the range [-π, π).
+ 
+         Returns
+
