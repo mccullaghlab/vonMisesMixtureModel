@@ -1,7 +1,9 @@
 import numpy as np
 from bvvmmm import SineBVvMMM
+from pathlib import Path
 
-X = np.load("repro_macro3_res12_phi_psi.npy")
+HERE = Path(__file__).resolve().parent
+X = np.load(HERE / "repro_macro3_res12_phi_psi.npy")
 
 m = SineBVvMMM(n_components=5, verbose=True, init_method="random", seed=1234)
 m.fit(X)
