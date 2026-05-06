@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: bvvmmm
-Version: 0.1.1
+Version: 1.0.0
 Summary: Bivariate von Mises Mixture Model for Circular Data Analysis
 Home-page: https://github.com/mccullaghlab/vonMisesMixtureModel
 Author: Martin McCullagh
