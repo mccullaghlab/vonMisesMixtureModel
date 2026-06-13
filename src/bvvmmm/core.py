@@ -887,6 +887,42 @@ class SineBVvMMM:
         responsibilities, ll = self._e_step(data)
         return ll
 
+    def configurational_entropy(self, n_points):
+        """
+        Estimate the configurational entropy of the fitted model by Monte Carlo integration.
+
+        Samples ``n_points`` configurations from the fitted mixture distribution and
+        estimates the entropy as the negative sample average of the model log-density,
+        ``-mean(ln P(x))``. The reported uncertainty is the standard error of the
+        sampled ``ln P(x)`` values.
+
+        Parameters
+        ----------
+        n_points : int
+            Number of configurations to generate from the fitted distribution.
+
+        Returns
+        -------
+        entropy : float
+            Monte Carlo estimate of the configurational entropy.
+        stderr : float
+            Standard error of the sampled log-density values.
+        """
+        n_points = int(n_points)
+        if n_points < 1:
+            raise ValueError("n_points must be a positive integer.")
+
+        samples, _ = self.generate(n_points)
+        ln_prob = self.ln_pdf(samples)
+        entropy = -torch.mean(ln_prob)
+
+        if n_points == 1:
+            stderr = torch.tensor(np.nan, device=self.device, dtype=self.dtype)
+        else:
+            stderr = torch.std(ln_prob, unbiased=True) / np.sqrt(n_points)
+
+        return entropy.detach().cpu().item(), stderr.detach().cpu().item()
+
     def generate(self, n_samples=10000):
         """
         Function to generate samples from distribution

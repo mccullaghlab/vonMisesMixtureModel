@@ -78,5 +78,42 @@ def test_refine_macro3_res12_stays_finite():
     assert torch.isfinite(model.ll)
 
 
+def test_configurational_entropy_uses_generated_log_probabilities(monkeypatch):
+    model = SineBVvMMM(n_components=1, max_iter=1, tol=1e-4, verbose=False)
+    model.weights_ = torch.tensor([1.0], dtype=model.dtype, device=model.device)
+    model.means_ = torch.tensor([[0.0, 0.0]], dtype=model.dtype, device=model.device)
+    model.kappas_ = torch.tensor([[1.0, 1.0, 0.0]], dtype=model.dtype, device=model.device)
+    model.normalization_ = model._calculate_normalization_constant(model.kappas_)
+
+    samples = np.array([
+        [0.0, 0.0],
+        [0.25, -0.25],
+        [-0.5, 0.5],
+        [1.0, -1.0],
+    ])
+
+    def fake_generate(n_points):
+        assert n_points == samples.shape[0]
+        return samples, np.zeros(n_points, dtype=int)
+
+    monkeypatch.setattr(model, "generate", fake_generate)
+
+    entropy, stderr = model.configurational_entropy(samples.shape[0])
+    ln_prob = model.ln_pdf(samples)
+
+    np.testing.assert_allclose(entropy, (-torch.mean(ln_prob)).cpu().numpy())
+    np.testing.assert_allclose(
+        stderr,
+        (torch.std(ln_prob, unbiased=True) / np.sqrt(samples.shape[0])).cpu().numpy(),
+    )
+
+
+def test_configurational_entropy_rejects_non_positive_n_points():
+    model = SineBVvMMM(n_components=1, max_iter=1, tol=1e-4, verbose=False)
+
+    with pytest.raises(ValueError, match="n_points must be a positive integer"):
+        model.configurational_entropy(0)
+
+
 if __name__ == "__main__":
     pytest.main(["-v", "tests/test_core.py"])
